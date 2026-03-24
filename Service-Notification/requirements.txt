@@ -1,0 +1,34 @@
+# ── Framework principal ────────────────────────────────────────
+fastapi==0.115.0
+uvicorn==0.30.0
+
+# ── Base de données ────────────────────────────────────────────
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.9
+alembic==1.13.0
+
+# ── Authentification JWT ───────────────────────────────────────
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# ── Validation & Config ────────────────────────────────────────
+pydantic==2.9.0
+pydantic-settings==2.5.0
+python-multipart==0.0.9
+
+# ── HTTP inter-services ────────────────────────────────────────
+httpx==0.27.0
+
+# ── Email ─────────────────────────────────────────────────────
+aiosmtplib==3.0.1       # envoi email asynchrone
+jinja2==3.1.4           # templates HTML pour les emails
+
+# ── Tests ─────────────────────────────────────────────────────
+pytest==8.3.0
+pytest-asyncio==0.23.0
+coverage==7.6.0
+
+# ── Sécurité CI/CD ────────────────────────────────────────────
+bandit==1.7.5
+safety==2.3.5
+bcrypt==4.0.1
