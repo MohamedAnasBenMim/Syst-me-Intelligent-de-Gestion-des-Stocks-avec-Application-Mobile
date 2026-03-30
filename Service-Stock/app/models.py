@@ -21,6 +21,7 @@ class Produit(Base):
     designation      = Column(String(200), nullable=False)
     categorie        = Column(String(100), nullable=True)
     unite_mesure     = Column(String(20),  default="unite",   nullable=False)
+    prix_unitaire    = Column(Float,       default=0.0,       nullable=False)
     seuil_alerte_min = Column(Float,       default=10.0,      nullable=False)
     seuil_alerte_max = Column(Float,       default=1000.0,    nullable=False)
     est_actif        = Column(Boolean,     default=True,      nullable=False)

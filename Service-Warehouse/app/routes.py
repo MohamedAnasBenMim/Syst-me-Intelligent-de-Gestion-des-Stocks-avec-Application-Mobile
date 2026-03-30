@@ -15,6 +15,7 @@ from app.dependencies import (
     get_current_user,
     get_current_admin,
     get_current_gestionnaire_or_admin,
+    get_all_roles,
     get_pagination
 )
 from app.config import settings
@@ -60,12 +61,12 @@ async def calculer_capacite_utilisee(entrepot_id: int, token: str) -> float:
     response_model=EntrepotResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Créer un entrepôt",
-    description="Crée un nouvel entrepôt avec ses zones initiales. Réservé à l'administrateur."
+    description="Crée un nouvel entrepôt avec ses zones initiales. Admin et Gestionnaire."
 )
 def creer_entrepot(
     entrepot_data: EntrepotCreate,
     db           : Session = Depends(get_db),
-    current_user : dict    = Depends(get_current_admin)
+    current_user : dict    = Depends(get_current_gestionnaire_or_admin)
 ):
     # Vérifier que le code est unique
     existant = db.query(Entrepot).filter(Entrepot.code == entrepot_data.code).first()
@@ -126,8 +127,9 @@ async def lister_entrepots(
         .all()
     )
 
-    # Calculer capacite_utilisee en temps réel pour chaque entrepôt
+    # Charger les zones et calculer capacite_utilisee pour chaque entrepôt
     for entrepot in entrepots:
+        entrepot.zones = db.query(Zone).filter(Zone.entrepot_id == entrepot.id).all()
         entrepot.capacite_utilisee = await calculer_capacite_utilisee(
             entrepot.id, token
         )
@@ -161,6 +163,9 @@ async def get_entrepot(
             detail=f"Entrepôt avec l'id {entrepot_id} introuvable"
         )
 
+    # Charger les zones de cet entrepôt
+    entrepot.zones = db.query(Zone).filter(Zone.entrepot_id == entrepot_id).all()
+
     # Calculer capacite_utilisee en temps réel
     entrepot.capacite_utilisee = await calculer_capacite_utilisee(
         entrepot_id, token
@@ -173,13 +178,13 @@ async def get_entrepot(
     "/entrepots/{entrepot_id}",
     response_model=EntrepotResponse,
     summary="Modifier un entrepôt",
-    description="Modifie les informations d'un entrepôt existant. Réservé à l'administrateur."
+    description="Modifie les informations d'un entrepôt existant. Admin et Gestionnaire."
 )
 def modifier_entrepot(
     entrepot_id  : int,
     entrepot_data: EntrepotUpdate,
     db           : Session = Depends(get_db),
-    current_user : dict    = Depends(get_current_admin)
+    current_user : dict    = Depends(get_current_gestionnaire_or_admin)
 ):
     entrepot = db.query(Entrepot).filter(Entrepot.id == entrepot_id).first()
     if not entrepot:

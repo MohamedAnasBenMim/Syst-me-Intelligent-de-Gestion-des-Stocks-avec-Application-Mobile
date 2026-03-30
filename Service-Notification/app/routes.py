@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from datetime import datetime
 import aiosmtplib
+
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -33,10 +34,10 @@ async def envoyer_email(
     destinataire : str,
     sujet        : str,
     contenu_html : str,
-) -> bool:
+) -> tuple[bool, str | None]:
     """
     Envoie un email via SMTP asynchrone.
-    Retourne True si succès, False si échec.
+    Retourne (True, None) si succès, (False, message_erreur) si échec.
     """
     try:
         message = MIMEMultipart("alternative")
@@ -54,9 +55,10 @@ async def envoyer_email(
             password = settings.SMTP_PASSWORD,
             start_tls= True,
         )
-        return True
-    except Exception:
-        return False
+        return True, None
+    except Exception as e:
+        print("Erreur envoi email:", e)
+        return False, str(e)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -139,6 +141,7 @@ def generer_template_alerte(data: NotificationEnvoyer) -> tuple[str, str]:
     "/notifications/envoyer",
     response_model=NotificationResponse,
     status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,  # Endpoint interne — appelé par Service-Alertes uniquement
     summary="Envoyer une notification",
     description="Appelé par Service Alertes pour envoyer email/push aux responsables."
 )
@@ -169,7 +172,7 @@ async def envoyer_notification(
     db.commit()
     db.refresh(notification)
 
-    succes = await envoyer_email(
+    succes, erreur = await envoyer_email(
         destinataire = destinataire_email,
         sujet        = sujet,
         contenu_html = contenu_html,
@@ -180,7 +183,7 @@ async def envoyer_notification(
         notification.envoye_le = datetime.now()
     else:
         notification.statut         = StatutNotification.ECHEC
-        notification.erreur_message = "Échec envoi SMTP"
+        notification.erreur_message = f"Échec envoi SMTP : {erreur}"
 
     db.commit()
     db.refresh(notification)
@@ -253,29 +256,10 @@ async def stats_notifications(
     )
 
 
-@router.get(
-    "/notifications/{notification_id}",
-    response_model=NotificationResponse,
-    summary="Détail d'une notification",
-)
-async def get_notification(
-    notification_id: int,
-    db             : Session = Depends(get_db),
-    current_user   : dict    = Depends(get_current_gestionnaire_or_admin),
-):
-    notification = db.query(Notification).filter(
-        Notification.id == notification_id
-    ).first()
-    if not notification:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Notification {notification_id} introuvable"
-        )
-    return notification
-
-
 # ═══════════════════════════════════════════════════════════
 # ROUTES ADMIN UNIQUEMENT
+# IMPORTANT : doit être définie AVANT /{notification_id}
+# sinon FastAPI capture "echecs" comme un entier → 422
 # ═══════════════════════════════════════════════════════════
 
 @router.get(
@@ -302,3 +286,67 @@ async def notifications_echecs(
         per_page      = pagination["per_page"],
         notifications = notifications
     )
+
+
+@router.post(
+    "/notifications/{notification_id}/renvoyer",
+    response_model=NotificationResponse,
+    summary="Renvoyer une notification échouée",
+    description="Retente l'envoi d'une notification en échec. Réservé à Admin."
+)
+async def renvoyer_notification(
+    notification_id: int,
+    db             : Session = Depends(get_db),
+    current_user   : dict    = Depends(get_current_admin),
+):
+    notification = db.query(Notification).filter(
+        Notification.id == notification_id
+    ).first()
+    if not notification:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Notification {notification_id} introuvable"
+        )
+    if notification.statut != StatutNotification.ECHEC:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Seules les notifications en échec peuvent être renvoyées"
+        )
+
+    succes, erreur = await envoyer_email(
+        destinataire = notification.destinataire_email,
+        sujet        = notification.sujet,
+        contenu_html = notification.contenu_html or notification.contenu,
+    )
+
+    if succes:
+        notification.statut         = StatutNotification.ENVOYEE
+        notification.envoye_le      = datetime.now()
+        notification.erreur_message = None
+    else:
+        notification.erreur_message = f"Échec envoi SMTP : {erreur}"
+
+    db.commit()
+    db.refresh(notification)
+    return notification
+
+
+@router.get(
+    "/notifications/{notification_id}",
+    response_model=NotificationResponse,
+    summary="Détail d'une notification",
+)
+async def get_notification(
+    notification_id: int,
+    db             : Session = Depends(get_db),
+    current_user   : dict    = Depends(get_current_gestionnaire_or_admin),
+):
+    notification = db.query(Notification).filter(
+        Notification.id == notification_id
+    ).first()
+    if not notification:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Notification {notification_id} introuvable"
+        )
+    return notification

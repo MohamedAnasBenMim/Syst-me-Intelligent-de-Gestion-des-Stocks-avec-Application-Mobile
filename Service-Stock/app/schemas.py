@@ -27,6 +27,7 @@ class ProduitCreate(BaseModel):
     designation:      str            = Field(..., min_length=2, max_length=200)
     categorie:        Optional[str]  = None
     unite_mesure:     str            = "unite"
+    prix_unitaire:    float          = Field(default=0.0, ge=0)
     seuil_alerte_min: float          = Field(default=10.0,   ge=0)
     seuil_alerte_max: float          = Field(default=1000.0, ge=0)
 
@@ -49,6 +50,7 @@ class ProduitUpdate(BaseModel):
     designation:      Optional[str]   = None
     categorie:        Optional[str]   = None
     unite_mesure:     Optional[str]   = None
+    prix_unitaire:    Optional[float] = Field(None, ge=0)
     seuil_alerte_min: Optional[float] = Field(None, ge=0)
     seuil_alerte_max: Optional[float] = Field(None, ge=0)
     est_actif:        Optional[bool]  = None
@@ -60,6 +62,7 @@ class ProduitResponse(BaseModel):
     designation:      str
     categorie:        Optional[str]
     unite_mesure:     str
+    prix_unitaire:    float
     seuil_alerte_min: float
     seuil_alerte_max: float
     est_actif:        bool

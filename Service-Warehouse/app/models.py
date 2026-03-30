@@ -42,6 +42,7 @@ class Zone(Base):
     entrepot_id  = Column(Integer, nullable=False, index=True)
     nom          = Column(String(100), nullable=False)
     code         = Column(String(50),  nullable=False)
+    description  = Column(String(500), nullable=True)
     capacite_max = Column(Float,       nullable=False, default=100.0)
     est_actif    = Column(Boolean,     default=True, nullable=False)
     created_at   = Column(DateTime,    server_default=func.now(), nullable=False)

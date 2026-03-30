@@ -1,9 +1,12 @@
 # app/routes.py — service_stock/
 # Tous les endpoints CRUD du Stock Service
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 from typing import List, Optional
+import httpx
+import logging
 
 from app.database import get_db
 from app.dependencies import (
@@ -13,6 +16,45 @@ from app.dependencies import (
     all_roles,
 )
 from app import models, schemas
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+security = HTTPBearer()
+
+
+async def _notifier_alerte(
+    produit:     models.Produit,
+    stock:       models.Stock,
+    niveau:      str,
+    token:       str,
+):
+    """Appelle le Service Alertes après chaque modification de stock."""
+    if niveau == "normal":
+        payload = {
+            "produit_id":       produit.id,
+            "entrepot_id":      stock.entrepot_id,
+            "niveau":           "normal",
+            "quantite_actuelle": stock.quantite,
+        }
+    else:
+        payload = {
+            "produit_id":        produit.id,
+            "produit_nom":       produit.designation,
+            "entrepot_id":       stock.entrepot_id,
+            "niveau":            niveau,
+            "quantite_actuelle": stock.quantite,
+            "seuil_alerte_min":  produit.seuil_alerte_min,
+            "seuil_alerte_max":  produit.seuil_alerte_max,
+        }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{settings.ALERT_SERVICE_URL}/api/v1/alertes/declencher",
+                json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except Exception as e:
+        logger.warning(f"Alerte non envoyée (service indisponible) : {e}")
 
 
 router = APIRouter()
@@ -237,9 +279,10 @@ async def get_stocks_par_produit(
     description="Appelé lors d'une ENTREE ou TRANSFERT (entrepôt destination)."
 )
 async def augmenter_stock(
-    data:  schemas.StockAugmenter,
-    db:    Session = Depends(get_db),
-    _user: dict    = Depends(all_roles),
+    data:        schemas.StockAugmenter,
+    db:          Session                      = Depends(get_db),
+    _user:       dict                         = Depends(all_roles),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
     # Vérifier que le produit existe
     produit = db.query(models.Produit).filter(
@@ -282,6 +325,8 @@ async def augmenter_stock(
     db.commit()
     db.refresh(stock)
 
+    await _notifier_alerte(produit, stock, stock.niveau_alerte, credentials.credentials)
+
     return schemas.StockOperationResponse(
         produit_id     = data.produit_id,
         entrepot_id    = data.entrepot_id,
@@ -300,9 +345,10 @@ async def augmenter_stock(
     description="Appelé lors d'une SORTIE ou TRANSFERT (entrepôt source). Vérifie que stock >= quantite."
 )
 async def diminuer_stock(
-    data:  schemas.StockDiminuer,
-    db:    Session = Depends(get_db),
-    _user: dict    = Depends(all_roles),
+    data:        schemas.StockDiminuer,
+    db:          Session                      = Depends(get_db),
+    _user:       dict                         = Depends(all_roles),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
     # Vérifier que le produit existe
     produit = db.query(models.Produit).filter(
@@ -358,6 +404,8 @@ async def diminuer_stock(
 
     db.commit()
     db.refresh(stock)
+
+    await _notifier_alerte(produit, stock, stock.niveau_alerte, credentials.credentials)
 
     return schemas.StockOperationResponse(
         produit_id     = data.produit_id,
