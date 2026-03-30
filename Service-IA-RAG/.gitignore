@@ -1,0 +1,24 @@
+# .gitignore — service_ia_rag/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+
+# Data
+data/
+*.db
+
+# Logs
+*.log
+
+# Env
+.env

@@ -94,6 +94,24 @@ async def appeler_stock_diminuer(
     return response.json()
 
 
+async def indexer_mouvement_dans_rag(mouvement_id: int, produit_id: int,
+                                      entrepot_id: int, token: str):
+    """
+    Appelle Service IA-RAG pour indexer le nouveau mouvement dans ChromaDB.
+    Ne bloque pas si le service IA-RAG ne répond pas.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{settings.IA_RAG_SERVICE_URL}/api/v1/ia/embedding/vectoriser",
+                json={"produit_id": produit_id, "entrepot_id": entrepot_id,
+                      "force_update": False},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except Exception:
+        pass  # IA-RAG indisponible → on continue sans bloquer
+
+
 async def recuperer_nom_entrepot(entrepot_id: int, token: str) -> str:
     """
     Appelle Service Warehouse GET /entrepots/{id}
@@ -238,6 +256,13 @@ async def creer_mouvement(
     db.add(nouveau_mouvement)
     db.commit()
     db.refresh(nouveau_mouvement)
+
+    # Mise à jour automatique de ChromaDB (ne bloque pas la réponse)
+    await indexer_mouvement_dans_rag(
+        nouveau_mouvement.id, data.produit_id,
+        data.entrepot_dest_id or data.entrepot_source_id, token
+    )
+
     return nouveau_mouvement
 
 

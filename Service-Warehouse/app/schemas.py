@@ -11,6 +11,7 @@ from datetime import datetime
 class ZoneBase(BaseModel):
     nom: str = Field(..., min_length=2, max_length=100, description="Nom de la zone")
     code: str = Field(..., min_length=1, max_length=20, description="Code unique dans l'entrepôt")
+    description: Optional[str] = Field(None, max_length=500, description="Description de la zone")
     capacite_max: float = Field(default=100.0, gt=0, description="Capacité maximale de la zone")
     est_actif: bool = Field(default=True)
 
@@ -57,6 +58,7 @@ class ZoneUpdate(BaseModel):
     PUT /zones/{zone_id}  →  body est un ZoneUpdate
     """
     nom: Optional[str] = Field(None, min_length=2, max_length=100)
+    description: Optional[str] = Field(None, max_length=500)
     capacite_max: Optional[float] = Field(None, gt=0)
     est_actif: Optional[bool] = None
 

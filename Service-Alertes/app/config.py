@@ -31,6 +31,7 @@ class AlertesSettings(BaseSettings):
     STOCK_SERVICE_URL:        str = "http://localhost:8003"
     MOUVEMENT_SERVICE_URL:    str = "http://localhost:8004"
     NOTIFICATION_SERVICE_URL: str = "http://localhost:8006"
+    IA_RAG_SERVICE_URL:       str = "http://localhost:8008"
 
     # ── Validation ────────────────────────────────────────
     @field_validator("ALERTE_DATABASE_URL")

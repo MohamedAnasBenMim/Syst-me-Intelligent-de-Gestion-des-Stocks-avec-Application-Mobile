@@ -47,7 +47,7 @@ class NotificationSettings(BaseSettings):
 
     # ── Pointe vers le .env global ────────────────────────
     model_config = SettingsConfigDict(
-        env_file=r"C:\Users\nherz\OneDrive\Desktop\Projet Gestion-Stock\.env",
+        env_file="../.env",       # chemin relatif — fonctionne en local et en Docker
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",

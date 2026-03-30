@@ -2,9 +2,9 @@
 # Lit UNIQUEMENT les variables du Auth Service depuis le .env global
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, validator #permet de charger automatiquement les variables d’environnement.
+from pydantic import Field, field_validator
 from functools import lru_cache
-from typing import Literal #limiter les valeurs possibles
+from typing import Literal
 
 
 class AuthSettings(BaseSettings):
@@ -26,12 +26,17 @@ class AuthSettings(BaseSettings):
     JWT_ALGORITHM:      str = Field(default="HS256")
     JWT_EXPIRE_MINUTES: int = Field(default=1440, gt=0)
 
+    # ── Compte admin par défaut ────────────────────────────
+    ADMIN_EMAIL:    str = "admin@sgs.tn"
+    ADMIN_PASSWORD: str = "123456"
+
     # ── URLs des autres services ───────────────────────────
     STOCK_SERVICE_URL:        str = "http://localhost:8003"
     WAREHOUSE_SERVICE_URL:    str = "http://localhost:8002"
 
     # ── Validation ────────────────────────────────────────
-    @validator("AUTH_DATABASE_URL")
+    @field_validator("AUTH_DATABASE_URL")
+    @classmethod
     def validate_db_url(cls, v: str) -> str:
         if not v.startswith("postgresql://"):
             raise ValueError(
@@ -39,7 +44,8 @@ class AuthSettings(BaseSettings):
             )
         return v
 
-    @validator("JWT_SECRET_KEY")
+    @field_validator("JWT_SECRET_KEY")
+    @classmethod
     def validate_secret_key(cls, v: str) -> str:
         if len(v) < 32:
             raise ValueError(

@@ -1,0 +1,289 @@
+# ══════════════════════════════════════════════════════════════════
+# SGS — Système de Gestion de Stock
+# ──────────────────────────────────────────────────────────────────
+# MICROSERVICES APPLICATIFS (8001-8008)
+#   1. service-auth        → Authentification JWT         :8001
+#   2. service-warehouse   → Entrepôts                    :8002
+#   3. service-stock       → Produits & Stocks            :8003
+#   4. service-mouvement   → Entrées/Sorties/Transferts   :8004
+#   5. service-alertes     → Alertes seuils               :8005
+#   6. service-notification→ Emails & notifications       :8006
+#   7. service-reporting   → KPI + ML prédictif           :8007
+#   8. service-ia-rag      → Recommandations IA (RAG)     :8008
+#
+# INFRASTRUCTURE
+#   postgres               → PostgreSQL 15                :5432
+#   n8n                    → Automatisation workflows     :5678
+#   jenkins                → CI/CD pipeline               :8080
+# ══════════════════════════════════════════════════════════════════
+
+services:
+
+  # ── PostgreSQL partagé ────────────────────────────────────────
+  postgres:
+    image: postgres:15
+    container_name: sgs-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB:       postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - sgs-network
+    healthcheck:
+      test:     ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout:  3s
+      retries:  10
+
+  # ── Service 1 : Auth (8001) ───────────────────────────────────
+  service-auth:
+    build: ./service-Auth
+    container_name: sgs-auth
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    env_file: .env
+    environment:
+      AUTH_DATABASE_URL: postgresql://postgres:admin@postgres:5432/sgs_auth
+      AUTH_SERVICE_URL:  http://service-auth:8001
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - sgs-network
+
+  # ── Service 2 : Warehouse (8002) ──────────────────────────────
+  service-warehouse:
+    build: ./Service-Warehouse
+    container_name: sgs-warehouse
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    env_file: .env
+    environment:
+      WAREHOUSE_DATABASE_URL: postgresql://postgres:admin@postgres:5432/sgs_warehouse
+      AUTH_SERVICE_URL:        http://service-auth:8001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      service-auth:
+        condition: service_started
+    networks:
+      - sgs-network
+
+  # ── Service 3 : Stock (8003) ──────────────────────────────────
+  service-stock:
+    build: ./Service-Stock
+    container_name: sgs-stock
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+    env_file: .env
+    environment:
+      STOCK_DATABASE_URL:   postgresql://postgres:admin@postgres:5432/sgs_stock
+      AUTH_SERVICE_URL:     http://service-auth:8001
+      WAREHOUSE_SERVICE_URL: http://service-warehouse:8002
+      ALERT_SERVICE_URL:    http://service-alertes:8005
+    depends_on:
+      postgres:
+        condition: service_healthy
+      service-auth:
+        condition: service_started
+    networks:
+      - sgs-network
+
+  # ── Service 4 : Mouvement (8004) ──────────────────────────────
+  service-mouvement:
+    build: ./Service-Mouvement
+    container_name: sgs-mouvement
+    restart: unless-stopped
+    ports:
+      - "8004:8004"
+    env_file: .env
+    environment:
+      MOUVEMENT_DATABASE_URL: postgresql://postgres:admin@postgres:5432/sgs_mouvement
+      AUTH_SERVICE_URL:       http://service-auth:8001
+      STOCK_SERVICE_URL:      http://service-stock:8003
+      WAREHOUSE_SERVICE_URL:  http://service-warehouse:8002
+    depends_on:
+      postgres:
+        condition: service_healthy
+      service-stock:
+        condition: service_started
+    networks:
+      - sgs-network
+
+  # ── Service 5 : Alertes (8005) ────────────────────────────────
+  service-alertes:
+    build: ./Service-Alertes
+    container_name: sgs-alertes
+    restart: unless-stopped
+    ports:
+      - "8005:8005"
+    env_file: .env
+    environment:
+      ALERTE_DATABASE_URL:     postgresql://postgres:admin@postgres:5432/sgs_alert
+      AUTH_SERVICE_URL:        http://service-auth:8001
+      STOCK_SERVICE_URL:       http://service-stock:8003
+      WAREHOUSE_SERVICE_URL:   http://service-warehouse:8002
+      NOTIFICATION_SERVICE_URL: http://service-notification:8006
+      IA_RAG_SERVICE_URL:      http://service-ia-rag:8008
+    depends_on:
+      postgres:
+        condition: service_healthy
+      service-stock:
+        condition: service_started
+    networks:
+      - sgs-network
+
+  # ── Service 6 : Notification (8006) ───────────────────────────
+  service-notification:
+    build: ./Service-Notification
+    container_name: sgs-notification
+    restart: unless-stopped
+    ports:
+      - "8006:8006"
+    env_file: .env
+    environment:
+      NOTIFICATION_DATABASE_URL: postgresql://postgres:admin@postgres:5432/sgs_notification
+      AUTH_SERVICE_URL:           http://service-auth:8001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      service-auth:
+        condition: service_started
+    networks:
+      - sgs-network
+
+  # ── Service 7 : Reporting (8007) ──────────────────────────────
+  service-reporting:
+    build: ./Service-Reporting
+    container_name: sgs-reporting
+    restart: unless-stopped
+    ports:
+      - "8007:8007"
+    env_file: .env
+    environment:
+      REPORTING_DATABASE_URL: postgresql://postgres:admin@postgres:5432/sgs_reporting
+      AUTH_SERVICE_URL:       http://service-auth:8001
+      WAREHOUSE_SERVICE_URL:  http://service-warehouse:8002
+      STOCK_SERVICE_URL:      http://service-stock:8003
+      MOUVEMENT_SERVICE_URL:  http://service-mouvement:8004
+      ALERTE_SERVICE_URL:     http://service-alertes:8005
+    depends_on:
+      postgres:
+        condition: service_healthy
+      service-stock:
+        condition: service_started
+      service-mouvement:
+        condition: service_started
+    networks:
+      - sgs-network
+
+  # ── Service 8 : IA/RAG (8008) ─────────────────────────────────
+  # Deux bases de données :
+  #   PostgreSQL → recommandations, feedbacks, logs (structuré)
+  #   ChromaDB   → vecteurs des mouvements (sémantique, embarqué)
+  service-ia-rag:
+    build: ./Service-IA-RAG
+    container_name: sgs-ia-rag
+    restart: unless-stopped
+    ports:
+      - "8008:8008"
+    env_file: .env
+    environment:
+      IA_RAG_DATABASE_URL:     postgresql://postgres:admin@postgres:5432/sgs_ia_rag
+      AUTH_SERVICE_URL:        http://service-auth:8001
+      STOCK_SERVICE_URL:       http://service-stock:8003
+      MOUVEMENT_SERVICE_URL:   http://service-mouvement:8004
+      ALERTE_SERVICE_URL:      http://service-alertes:8005
+      NOTIFICATION_SERVICE_URL: http://service-notification:8006
+      # Ollama tourne sur la machine hôte (pas containerisé car trop lourd)
+      OLLAMA_BASE_URL:         http://host.docker.internal:11434
+    volumes:
+      - chroma_data:/app/data/chroma
+    depends_on:
+      postgres:
+        condition: service_healthy
+      service-mouvement:
+        condition: service_started
+    networks:
+      - sgs-network
+
+  # ══════════════════════════════════════════════════════════════
+  # INFRASTRUCTURE — n8n (Automatisation des workflows)
+  # Interface : http://localhost:5678
+  # Usage : déclenchement automatique recommandations IA,
+  #         alertes → notifications, rapports planifiés
+  # ══════════════════════════════════════════════════════════════
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: sgs-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      # Base de données n8n (PostgreSQL au lieu de SQLite)
+      DB_TYPE:              postgresdb
+      DB_POSTGRESDB_HOST:   postgres
+      DB_POSTGRESDB_PORT:   5432
+      DB_POSTGRESDB_DATABASE: sgs_n8n
+      DB_POSTGRESDB_USER:   postgres
+      DB_POSTGRESDB_PASSWORD: admin
+      # Configuration n8n
+      N8N_HOST:             localhost
+      N8N_PORT:             5678
+      N8N_PROTOCOL:         http
+      WEBHOOK_URL:          http://localhost:5678
+      # Sécurité
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER:  admin
+      N8N_BASIC_AUTH_PASSWORD: admin123
+      # Timezone
+      GENERIC_TIMEZONE:     Africa/Tunis
+      TZ:                   Africa/Tunis
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - sgs-network
+
+  # ══════════════════════════════════════════════════════════════
+  # INFRASTRUCTURE — Jenkins (CI/CD)
+  # Interface : http://localhost:8080
+  # Agent JNLP : port 50000
+  # Usage : build, test, deploy automatique à chaque git push
+  # ══════════════════════════════════════════════════════════════
+  jenkins:
+    image: jenkins/jenkins:lts
+    container_name: sgs-jenkins
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    environment:
+      JAVA_OPTS: "-Djenkins.install.runSetupWizard=false"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      # Accès au Docker de la machine hôte (pour builder les images)
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - sgs-network
+
+networks:
+  sgs-network:
+    driver: bridge
+
+volumes:
+  postgres_data:   # Données PostgreSQL persistantes
+  chroma_data:     # Vecteurs ChromaDB persistants (Service IA/RAG)
+  n8n_data:        # Workflows n8n persistants
+  jenkins_home:    # Configuration et jobs Jenkins persistants

@@ -113,6 +113,13 @@ def get_current_gestionnaire_or_admin(
     return current_user
 
 
+def get_all_roles(
+    current_user: dict = Depends(get_current_user)
+) -> dict:
+    """Accessible à tous les rôles connectés : admin, gestionnaire, opérateur."""
+    return current_user
+
+
 # ═══════════════════════════════════════════════════════════
 # DÉPENDANCE PAGINATION
 # ═══════════════════════════════════════════════════════════
