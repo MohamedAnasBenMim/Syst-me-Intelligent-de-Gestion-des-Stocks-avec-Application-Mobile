@@ -97,7 +97,7 @@ async def startup_event():
     logger.info(f"Démarrage du {settings.SERVICE_NAME}")
     logger.info(f"  Port       : {settings.SERVICE_PORT}")
     logger.info(f"  Embedding  : {settings.EMBEDDING_MODEL}")
-    logger.info(f"  LLM        : {settings.LLM_MODEL} via {settings.LLM_PROVIDER}")
+    logger.info(f"  LLM        : Groq ({settings.GROQ_MODEL}) | fallback Ollama ({settings.LLM_MODEL})")
     logger.info(f"  ChromaDB   : {settings.CHROMA_PERSIST_DIR}")
     logger.info("=" * 60)
 

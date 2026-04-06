@@ -60,7 +60,9 @@ Les deux bases sont SÉPARÉES mouvement et stock!
 
     # Zone source et destination (optionnel)
     zone_source_id  = Column(Integer, nullable=True)
+    zone_source_nom = Column(String(200), nullable=True)
     zone_dest_id    = Column(Integer, nullable=True)
+    zone_dest_nom   = Column(String(200), nullable=True)
 
     # Informations complémentaires
     reference       = Column(String(100), nullable=True)   # référence bon de livraison

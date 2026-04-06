@@ -1,0 +1,144 @@
+:root {
+  --primary:      #5784BA;
+  --accent:       #9AC8EB;
+  --soft:         #B6D8F2;
+  --pink:         #F4CFDF;
+  --light:        #F7F6CF;
+  --text:         #1e293b;
+  --text-muted:   #64748b;
+  --border-light: #e5e7eb;
+}
+
+/* ── HERO ── */
+.hero {
+  position: relative;
+  padding: 130px 0 100px;
+  background: transparent;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+}
+
+/* ── BLOBS ── */
+.hero-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(100px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.hero-blob-1 {
+  width: 600px;
+  height: 600px;
+  background: #B6D8F2;
+  top: -120px;
+  right: -100px;
+}
+
+.hero-blob-2 {
+  width: 450px;
+  height: 450px;
+  background: #B6D8F2;
+  bottom: -80px;
+  left: -60px;
+}
+
+/* ── CENTRE ── */
+.hero-center {
+  text-align: center;
+  max-width: 800px;
+  margin: auto;
+  position: relative;
+  z-index: 1;
+}
+
+/* ── TITRE ── */
+.hero-title {
+  font-size: 60px;
+  font-weight: 900;
+  color: var(--primary);
+  margin-bottom: 24px;
+  line-height: 1.1;
+  color: black;
+}
+
+.hero-gradient {
+  background: linear-gradient(135deg, var(--primary), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: black;
+}
+
+/* ── SOUS-TITRE ── */
+.hero-subtitle {
+  font-size: 18px;
+  color: var(--text-muted);
+  margin-bottom: 35px;
+  line-height: 1.6;
+}
+
+/* ── BOUTONS ── */
+.hero-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  margin-bottom: 30px;
+  flex-wrap: wrap;
+}
+
+.btn-outline {
+  border: 2px solid var(--soft);
+  color: white;
+  padding: 13px 26px;
+  border-radius: 12px;
+  background: #5784BA;
+  backdrop-filter: blur(8px);
+  transition: 0.3s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.btn-outline:hover {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+  transform: translateY(-3px) scale(1.05);
+  box-shadow: 0 10px 25px rgba(87, 132, 186, 0.4);
+}
+
+/* ── TRUST ── */
+.trust-row {
+  display: flex;
+  justify-content: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.trust-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.70);
+  backdrop-filter: blur(8px);
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--soft);
+  font-size: 14px;
+  color: var(--text);
+}
+
+/* ── ANIMATION ── */
+.reveal {
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+
+.reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
+}

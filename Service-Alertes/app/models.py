@@ -8,18 +8,19 @@ import enum
 
 # ── Enum niveau d'alerte ───────────────────────────────────────
 class NiveauAlerte(str, enum.Enum):
-    NORMAL   = "normal"
-    CRITIQUE = "critique"
-    RUPTURE  = "rupture"
-    SURSTOCK = "surstock"
+    NORMAL             = "NORMAL"
+    CRITIQUE           = "CRITIQUE"
+    RUPTURE            = "RUPTURE"
+    SURSTOCK           = "SURSTOCK"
+    EXPIRATION_PROCHE  = "EXPIRATION_PROCHE"
 
 
 # ── Enum statut de l'alerte ────────────────────────────────────
 class StatutAlerte(str, enum.Enum):
-    ACTIVE   = "active"    # Alerte déclenchée, non traitée
-    TRAITEE  = "traitee"   # Alerte prise en charge
-    RESOLUE  = "resolue"   # Problème résolu, stock revenu normal
-    IGNOREE  = "ignoree"   # Alerte ignorée par le responsable
+    ACTIVE   = "ACTIVE"    # Alerte déclenchée, non traitée
+    TRAITEE  = "TRAITEE"   # Alerte prise en charge
+    RESOLUE  = "RESOLUE"   # Problème résolu, stock revenu normal
+    IGNOREE  = "IGNOREE"   # Alerte ignorée par le responsable
 
 
 # ── Table alertes ──────────────────────────────────────────────

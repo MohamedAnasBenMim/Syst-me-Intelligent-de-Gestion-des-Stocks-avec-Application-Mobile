@@ -20,6 +20,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import datetime, timedelta
+import asyncio
 import httpx
 import json
 import pandas as pd
@@ -28,10 +29,14 @@ from prophet import Prophet
 from sklearn.ensemble import IsolationForest
 
 from app.database import get_db
-from app.models import Rapport, Prevision, TypeRapport, StatutRapport
+from app.models import Rapport, Prevision, TypeRapport, StatutRapport, CalculProfitPerte
 from app.schemas import (
     DashboardResponse, KPIGlobaux, TopProduit,
-    PrevisionML, RapportCreate, RapportResponse, MessageResponse
+    PrevisionML, RapportCreate, RapportResponse, MessageResponse,
+    DepensesInput, ProfitPerteResponse, DetailDepenses, DetailStock,
+    AnalyseIA, ProfitPerteHistorique,
+    PertesProduitsResponse, PerteCategorieDetail, ProduitPerimeDetail,
+    SalairesResponse, SalaireEmployeDetail,
 )
 from app.dependencies import (
     get_current_user,
@@ -72,7 +77,7 @@ async def recuperer_mouvements(token: str) -> list:
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(
-                f"{settings.MOUVEMENT_SERVICE_URL}/api/v1/mouvements?limit=500",
+                f"{settings.MOUVEMENT_SERVICE_URL}/api/v1/mouvements?per_page=500",
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=10.0
             )
@@ -230,8 +235,10 @@ def predire_rupture_adaptative(
         ]
 
         if not sorties:
-            return _construire_resultat(stock_actuel * 0.1, 0.3,
-                                        "aucune sortie enregistrée — estimation prudente")
+            # Estimation prudente : 3% du stock par jour
+            conso_prudente = max(stock_actuel * 0.03, 0.5)
+            return _construire_resultat(conso_prudente, 0.3,
+                                        "aucune sortie enregistrée — estimation prudente (3%/jour)")
 
         # ── Agréger par jour ──────────────────────────────
         df = pd.DataFrame([
@@ -242,13 +249,25 @@ def predire_rupture_adaptative(
         df = df.groupby("ds")["y"].sum().reset_index().sort_values("ds")
         nb_jours = len(df)
 
+        # Total sorties sur toute la période connue → taux moyen lissé
+        total_sorties = float(df["y"].sum())
+        # Nombre de jours réels entre première et dernière sortie (min 1)
+        if nb_jours > 1:
+            periode_jours = max((df["ds"].iloc[-1] - df["ds"].iloc[0]).days, 1)
+        else:
+            periode_jours = 30  # On suppose que 1 sortie ponctuelle = 1 commande/mois
+
+        conso_lissee = total_sorties / periode_jours
+
         # ════════════════════════════════════════════════
-        # CAS 1 — 1 JOUR : taux journalier
+        # CAS 1 — 1 JOUR : taux lissé sur 30 jours
         # ════════════════════════════════════════════════
         if nb_jours == 1:
-            conso_jour = float(df["y"].iloc[0])
+            # Une seule sortie ne représente pas la consommation quotidienne
+            # On divise par 30 pour obtenir un taux mensuel
+            conso_jour = max(conso_lissee, 0.5)
             return _construire_resultat(conso_jour, 0.4,
-                                        "1 journée de données — taux journalier direct")
+                                        f"1 sortie observée — taux lissé sur 30 jours")
 
         # ════════════════════════════════════════════════
         # CAS 2 — 2 à 6 JOURS : moyenne mobile
@@ -549,70 +568,483 @@ async def detecter_anomalies_reporting(
             "anomalies": []
         }
 
-    # ── Construire la matrice de features ──────────────
-    # Features : [quantite, type_encoded, produit_id, entrepot_id]
-    type_map = {"entree": 0, "sortie": 1, "transfert": 2}
-    features, meta = [], []
+    # ── Récupérer les stocks actuels pour comparaison ──
+    stocks = await recuperer_stocks(token)
+    stock_map = {s.get("produit_id"): s.get("quantite", 0) for s in stocks}
 
-    for m in mouvements:
-        quantite    = float(m.get("quantite") or 0)
-        type_mvt    = type_map.get(m.get("type_mouvement", ""), 0)
-        produit_id  = float(m.get("produit_id") or 0)
-        entrepot_id = float(m.get("entrepot_source_id") or m.get("entrepot_dest_id") or 0)
-
-        features.append([quantite, type_mvt, produit_id, entrepot_id])
-        meta.append({
-            "id":          m.get("id"),
-            "produit_id":  m.get("produit_id"),
-            "produit_nom": m.get("produit_nom", f"Produit {m.get('produit_id')}"),
-            "quantite":    quantite,
-            "type":        m.get("type_mouvement"),
-            "entrepot_id": int(entrepot_id),
-            "created_at":  m.get("created_at", "")
-        })
-
-    X = np.array(features)
-
-    # ── Entraîner Isolation Forest ──────────────────────
-    # contamination=0.1 → 10% des données considérées comme anomalies
-    model       = IsolationForest(contamination=0.1, random_state=42, n_estimators=100)
-    predictions = model.fit_predict(X)   # -1 = anomalie, 1 = normal
-    scores      = model.score_samples(X) # score négatif = plus anormal
-
-    # ── Collecter les anomalies ─────────────────────────
     anomalies = []
-    moyenne_quantite = float(np.mean(X[:, 0]))
 
-    for i, pred in enumerate(predictions):
-        if pred == -1:
-            m_meta = meta[i]
-            score  = round(float(scores[i]), 4)
-            sens   = "élevée" if m_meta["quantite"] > moyenne_quantite else "basse"
-
+    # ════════════════════════════════════════════════════
+    # ANOMALIE 1 — Quantité = 0
+    # Un mouvement de 0 unité n'a aucun sens métier
+    # ════════════════════════════════════════════════════
+    for m in mouvements:
+        quantite = float(m.get("quantite") or 0)
+        if quantite == 0:
             anomalies.append({
-                "mouvement_id":   m_meta["id"],
-                "produit_id":     m_meta["produit_id"],
-                "produit_nom":    m_meta["produit_nom"],
-                "entrepot_id":    m_meta["entrepot_id"],
-                "quantite":       m_meta["quantite"],
-                "type":           m_meta["type"],
-                "date":           m_meta["created_at"][:10] if m_meta["created_at"] else "",
-                "score_anomalie": score,
-                "raison":         (
-                    f"Quantité {m_meta['quantite']} inhabituellement {sens} "
-                    f"pour un mouvement de type {m_meta['type']} "
-                    f"(moyenne : {round(moyenne_quantite, 1)})"
+                "mouvement_id": m.get("id"),
+                "produit_id":   m.get("produit_id"),
+                "produit_nom":  m.get("produit_nom", f"Produit {m.get('produit_id')}"),
+                "entrepot_id":  m.get("entrepot_source_id") or m.get("entrepot_dest_id"),
+                "quantite":     quantite,
+                "type":         m.get("type_mouvement"),
+                "date":         (m.get("created_at") or "")[:10],
+                "type_anomalie": "quantite_zero",
+                "raison":       "Mouvement enregistré avec une quantité de 0 — saisie invalide"
+            })
+
+    # ════════════════════════════════════════════════════
+    # ANOMALIE 2 — Sortie supérieure au stock disponible
+    # Physiquement impossible de sortir plus qu'on n'a
+    # ════════════════════════════════════════════════════
+    for m in mouvements:
+        if m.get("type_mouvement") != "sortie":
+            continue
+        quantite   = float(m.get("quantite") or 0)
+        produit_id = m.get("produit_id")
+        stock_dispo = stock_map.get(produit_id, 0)
+
+        # stock_apres négatif = on a sorti plus qu'on n'avait
+        stock_apres = m.get("stock_apres")
+        if stock_apres is not None and float(stock_apres) < 0:
+            anomalies.append({
+                "mouvement_id": m.get("id"),
+                "produit_id":   produit_id,
+                "produit_nom":  m.get("produit_nom", f"Produit {produit_id}"),
+                "entrepot_id":  m.get("entrepot_source_id"),
+                "quantite":     quantite,
+                "type":         "sortie",
+                "date":         (m.get("created_at") or "")[:10],
+                "type_anomalie": "stock_negatif",
+                "raison":       (
+                    f"Sortie de {quantite} unités a rendu le stock négatif "
+                    f"({stock_apres} unités) — impossible physiquement"
                 )
             })
 
-    # Trier par score d'anomalie (les plus anormaux en premier)
-    anomalies.sort(key=lambda x: x["score_anomalie"])
+    # ════════════════════════════════════════════════════
+    # ANOMALIE 3 — Doublon exact (même produit, même quantité,
+    #              même entrepôt, même seconde)
+    # ════════════════════════════════════════════════════
+    # Détection doublon dans une fenêtre de 60 secondes
+    mvts_tries = sorted(mouvements, key=lambda x: x.get("created_at", ""))
+    for idx, m in enumerate(mvts_tries):
+        try:
+            dt_m = datetime.fromisoformat((m.get("created_at") or "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        for m2 in mvts_tries[idx + 1:]:
+            try:
+                dt_m2 = datetime.fromisoformat((m2.get("created_at") or "").replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if (dt_m2 - dt_m).total_seconds() > 60:
+                break
+            if (
+                m.get("produit_id")     == m2.get("produit_id") and
+                m.get("quantite")       == m2.get("quantite") and
+                m.get("type_mouvement") == m2.get("type_mouvement") and
+                (m.get("entrepot_source_id") or m.get("entrepot_dest_id")) ==
+                (m2.get("entrepot_source_id") or m2.get("entrepot_dest_id"))
+            ):
+                diff = int((dt_m2 - dt_m).total_seconds())
+                anomalies.append({
+                    "mouvement_id":  m2.get("id"),
+                    "produit_id":    m2.get("produit_id"),
+                    "produit_nom":   m2.get("produit_nom", f"Produit {m2.get('produit_id')}"),
+                    "entrepot_id":   m2.get("entrepot_source_id") or m2.get("entrepot_dest_id"),
+                    "quantite":      float(m2.get("quantite") or 0),
+                    "type":          m2.get("type_mouvement"),
+                    "date":          (m2.get("created_at") or "")[:10],
+                    "type_anomalie": "doublon",
+                    "raison":        (
+                        f"Doublon probable — même mouvement ({m.get('type_mouvement')}, "
+                        f"{m.get('quantite')} unités, produit {m.get('produit_id')}) "
+                        f"répété {diff} secondes après (IDs: {m.get('id')} et {m2.get('id')})"
+                    )
+                })
 
     return {
         "success":          True,
         "message":          f"Analyse terminée — {len(mouvements)} mouvements analysés",
         "total_mouvements": len(mouvements),
         "anomalies_count":  len(anomalies),
-        "moyenne_quantite": round(moyenne_quantite, 2),
         "anomalies":        anomalies
     }
+
+
+# ═══════════════════════════════════════════════════════
+# PROFIT & PERTE — Helpers inter-services
+# ═══════════════════════════════════════════════════════
+
+async def recuperer_produits_avec_stocks(token: str) -> list:
+    """Stocks avec détails produits (prix, promo, expiration)."""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/stocks",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"per_page": 1000},
+                timeout=10.0,
+            )
+            return r.json() if r.status_code == 200 else []
+    except Exception:
+        return []
+
+
+async def recuperer_pertes_produits_auto(token: str) -> tuple[float, dict | None]:
+    """
+    Appelle GET /stocks/produits-perimes.
+    Retourne (total_global, données_brutes) — (0.0, None) si indisponible.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/stocks/produits-perimes",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10.0,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                return float(data.get("total_global", 0)), data
+    except Exception:
+        pass
+    return 0.0, None
+
+
+async def recuperer_salaires_auto(token: str) -> tuple[float, dict | None]:
+    """
+    Appelle GET /utilisateurs/salaires.
+    Retourne (total_salaires, données_brutes) — (0.0, None) si indisponible.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{settings.AUTH_SERVICE_URL}/api/v1/utilisateurs/salaires",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10.0,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                return float(data.get("total_salaires", 0)), data
+    except Exception:
+        pass
+    return 0.0, None
+
+
+def _appeler_ia_analyse_pl(
+    eau: float,
+    electricite: float,
+    salaires: float,
+    pertes_produits: float,
+    autres: float,
+    total_depenses: float,
+    valeur_stock: float,
+    profit: float,
+    statut: str,
+) -> AnalyseIA | None:
+    """
+    Appel synchrone IA-RAG pour analyser le P&L.
+    Timeout 5s — fallback None si indisponible.
+    """
+    try:
+        noms = {
+            "eau"            : eau,
+            "électricité"    : electricite,
+            "salaires"       : salaires,
+            "pertes produits": pertes_produits,
+            "autres"         : autres,
+        }
+        max_nom = max(noms, key=lambda k: noms[k])
+        max_val = noms[max_nom]
+        pct_max = round((max_val / total_depenses * 100) if total_depenses > 0 else 0, 1)
+
+        prompt = (
+            f"Analyse du P&L d'un entrepôt de stock :\n"
+            f"- Total dépenses : {total_depenses:.2f} DT\n"
+            f"- Eau : {eau:.2f} DT\n"
+            f"- Électricité : {electricite:.2f} DT\n"
+            f"- Salaires : {salaires:.2f} DT\n"
+            f"- Pertes produits périmés : {pertes_produits:.2f} DT\n"
+            f"- Autres : {autres:.2f} DT\n"
+            f"- Valeur du stock sain : {valeur_stock:.2f} DT\n"
+            f"- Résultat : {profit:.2f} DT ({statut})\n\n"
+            f"Donne 3 recommandations courtes et concrètes pour améliorer la rentabilité."
+        )
+
+        with httpx.Client(timeout=5.0) as client:
+            r = client.post(
+                f"{settings.IA_RAG_SERVICE_URL}/api/v1/ia/question",
+                json={"question": prompt},
+            )
+            if r.status_code == 200:
+                reponse_ia = r.json().get("reponse", "")
+                lignes = [l.strip(" -•") for l in reponse_ia.split("\n") if l.strip(" -•")]
+                recommandations = [l for l in lignes if len(l) > 10][:3]
+                if not recommandations:
+                    recommandations = [reponse_ia[:200]]
+
+                alerte = None
+                if total_depenses > 0 and pertes_produits > total_depenses * 0.3:
+                    alerte = (
+                        f"Attention : les pertes produits représentent "
+                        f"{round(pertes_produits / total_depenses * 100, 1)}% "
+                        f"des dépenses — vérifiez la gestion des expirations."
+                    )
+
+                return AnalyseIA(
+                    depense_plus_elevee     = max_nom,
+                    pourcentage_depense_max = pct_max,
+                    recommandations         = recommandations,
+                    alerte_pertes_produits  = alerte,
+                )
+    except Exception:
+        pass
+    return None
+
+
+def _construire_pertes_response(data: dict) -> PertesProduitsResponse:
+    """Convertit la réponse JSON du service Stock en PertesProduitsResponse."""
+    categories = []
+    for cat in data.get("categories", []):
+        produits = [
+            ProduitPerimeDetail(
+                produit_id        = p["produit_id"],
+                reference         = p["reference"],
+                designation       = p["designation"],
+                date_expiration   = p["date_expiration"],
+                quantite_restante = p["quantite_restante"],
+                prix_unitaire     = p["prix_unitaire"],
+                valeur_perdue     = p["valeur_perdue"],
+                entrepot_id       = p["entrepot_id"],
+            )
+            for p in cat.get("produits", [])
+        ]
+        categories.append(PerteCategorieDetail(
+            categorie       = cat["categorie"],
+            produits        = produits,
+            total_categorie = cat["total_categorie"],
+        ))
+    return PertesProduitsResponse(
+        date_calcul  = data.get("date_calcul", ""),
+        nb_produits  = data.get("nb_produits", 0),
+        total_global = data.get("total_global", 0.0),
+        categories   = categories,
+    )
+
+
+def _construire_salaires_response(data: dict) -> SalairesResponse:
+    """Convertit la réponse JSON du service Auth en SalairesResponse."""
+    return SalairesResponse(
+        total_salaires = data.get("total_salaires", 0.0),
+        nb_employes    = data.get("nb_employes", 0),
+        detail         = [
+            SalaireEmployeDetail(
+                id      = e["id"],
+                nom     = e["nom"],
+                prenom  = e["prenom"],
+                role    = e["role"],
+                salaire = e["salaire"],
+            )
+            for e in data.get("detail", [])
+        ],
+    )
+
+
+# ═══════════════════════════════════════════════════════
+# PROFIT & PERTE — Routes
+# ═══════════════════════════════════════════════════════
+
+@router.get(
+    "/reporting/pertes-produits",
+    response_model=PertesProduitsResponse,
+    summary="Pertes sur produits périmés par catégorie",
+    description="Calcule automatiquement la valeur des produits périmés encore en stock, regroupés par catégorie.",
+)
+async def get_pertes_produits(
+    _current_user: dict                         = Depends(get_current_gestionnaire_or_admin),
+    credentials  : HTTPAuthorizationCredentials = Depends(security),
+):
+    _, data = await recuperer_pertes_produits_auto(credentials.credentials)
+    if data is None:
+        return PertesProduitsResponse(
+            date_calcul="", nb_produits=0, total_global=0.0, categories=[]
+        )
+    return _construire_pertes_response(data)
+
+
+@router.get(
+    "/reporting/salaires",
+    response_model=SalairesResponse,
+    summary="Total des salaires des employés",
+    description="Récupère depuis Service-Auth le total des salaires de tous les employés actifs.",
+)
+async def get_salaires(
+    _current_user: dict                         = Depends(get_current_gestionnaire_or_admin),
+    credentials  : HTTPAuthorizationCredentials = Depends(security),
+):
+    _, data = await recuperer_salaires_auto(credentials.credentials)
+    if data is None:
+        return SalairesResponse(total_salaires=0.0, nb_employes=0, detail=[])
+    return _construire_salaires_response(data)
+
+
+@router.post(
+    "/reporting/profit-perte",
+    response_model=ProfitPerteResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Calculer le Profit & Perte",
+    description="""
+    Calcule le résultat financier complet :
+
+    - **eau, electricite, autres** : saisie manuelle
+    - **salaires** : si omis (null), récupéré automatiquement depuis tous les employés (Service-Auth)
+    - **pertes_produits** : si omis (null), calculé automatiquement depuis les produits périmés (Service-Stock)
+    - Exclut les périmés de la valeur du stock (prix promo appliqué si en promotion)
+    - Appelle l'IA-RAG pour analyse et recommandations
+    - Sauvegarde dans l'historique
+    """,
+)
+async def calculer_profit_perte(
+    data        : DepensesInput,
+    db          : Session = Depends(get_db),
+    current_user: dict    = Depends(get_current_gestionnaire_or_admin),
+    credentials : HTTPAuthorizationCredentials = Depends(security),
+):
+    token       = credentials.credentials
+    aujourd_hui = datetime.now().date()
+
+    # ── 1. Stocks (valeur saine) + pertes auto ────────
+    stocks, (pertes_val, pertes_data), (salaires_val, salaires_data) = await asyncio.gather(
+        recuperer_produits_avec_stocks(token),
+        recuperer_pertes_produits_auto(token),
+        recuperer_salaires_auto(token),
+    )
+
+    # ── 2. Décider pertes et salaires ─────────────────
+    pertes_auto   = data.pertes_produits is None
+    salaires_auto = data.salaires        is None
+
+    montant_pertes   = pertes_val   if pertes_auto   else data.pertes_produits
+    montant_salaires = salaires_val if salaires_auto else data.salaires
+
+    # ── 3. Valeur du stock (hors périmés) ─────────────
+    nb_actifs  = 0
+    nb_exclus  = 0
+    val_normal = 0.0
+    val_promo  = 0.0
+
+    for s in stocks:
+        produit    = s.get("produit") or {}
+        quantite   = float(s.get("quantite", 0))
+        date_exp   = produit.get("date_expiration")
+        en_promo   = produit.get("en_promotion", False)
+        prix_unit  = float(produit.get("prix_unitaire") or 0)
+        prix_promo = float(produit.get("prix_promo") or 0)
+
+        if date_exp:
+            try:
+                if datetime.fromisoformat(date_exp[:10]).date() < aujourd_hui:
+                    nb_exclus += 1
+                    continue
+            except Exception:
+                pass
+
+        nb_actifs += 1
+        if en_promo and prix_promo > 0:
+            val_promo += prix_promo * quantite
+        else:
+            val_normal += prix_unit * quantite
+
+    valeur_stock = round(val_normal + val_promo, 2)
+
+    # ── 4. Totaux ─────────────────────────────────────
+    total_depenses = round(
+        data.eau + data.electricite + data.autres
+        + montant_pertes + montant_salaires,
+        2,
+    )
+    profit = round(valeur_stock - total_depenses, 2)
+    statut = "benefice" if profit > 0 else ("perte" if profit < 0 else "equilibre")
+
+    # ── 5. Analyse IA ─────────────────────────────────
+    analyse_ia = _appeler_ia_analyse_pl(
+        eau             = data.eau,
+        electricite     = data.electricite,
+        salaires        = montant_salaires,
+        pertes_produits = montant_pertes,
+        autres          = data.autres,
+        total_depenses  = total_depenses,
+        valeur_stock    = valeur_stock,
+        profit          = profit,
+        statut          = statut,
+    )
+
+    # ── 6. Sauvegarder ────────────────────────────────
+    calcul = CalculProfitPerte(
+        depense_eau             = data.eau,
+        depense_electricite     = data.electricite,
+        depense_salaires        = montant_salaires,
+        depense_pertes_produits = montant_pertes,
+        depense_autres          = data.autres,
+        total_depenses          = total_depenses,
+        valeur_stock            = valeur_stock,
+        profit                  = profit,
+        statut                  = statut,
+        analyse_ia              = json.dumps(analyse_ia.model_dump()) if analyse_ia else None,
+        calcule_par_id          = current_user.get("user_id"),
+        calcule_par_nom         = current_user.get("nom") or current_user.get("username"),
+    )
+    db.add(calcul)
+    db.commit()
+    db.refresh(calcul)
+
+    # ── 7. Construire la réponse ───────────────────────
+    return ProfitPerteResponse(
+        total_depenses  = total_depenses,
+        valeur_stock    = valeur_stock,
+        profit          = profit,
+        statut          = statut,
+        detail_depenses = DetailDepenses(
+            eau                  = data.eau,
+            electricite          = data.electricite,
+            salaires             = montant_salaires,
+            pertes_produits      = montant_pertes,
+            autres               = data.autres,
+            total                = total_depenses,
+            salaires_auto        = salaires_auto,
+            pertes_produits_auto = pertes_auto,
+        ),
+        detail_stock    = DetailStock(
+            nb_produits_actifs  = nb_actifs,
+            nb_produits_exclus  = nb_exclus,
+            valeur_stock_normal = round(val_normal, 2),
+            valeur_stock_promo  = round(val_promo, 2),
+            valeur_totale       = valeur_stock,
+        ),
+        pertes_produits = _construire_pertes_response(pertes_data) if pertes_data else None,
+        salaires_detail = _construire_salaires_response(salaires_data) if salaires_data else None,
+        analyse_ia      = analyse_ia,
+        calcule_le      = calcul.calcule_le,
+        calcul_id       = calcul.id,
+    )
+
+
+@router.get(
+    "/reporting/profit-perte/historique",
+    response_model=List[ProfitPerteHistorique],
+    summary="Historique des calculs P&L",
+    description="Liste tous les calculs P&L effectués, du plus récent au plus ancien.",
+)
+async def historique_profit_perte(
+    db           : Session = Depends(get_db),
+    _current_user: dict    = Depends(get_current_gestionnaire_or_admin),
+    pagination   : dict    = Depends(get_pagination),
+):
+    return (
+        db.query(CalculProfitPerte)
+        .order_by(CalculProfitPerte.calcule_le.desc())
+        .offset(pagination["skip"])
+        .limit(pagination["limit"])
+        .all()
+    )

@@ -26,6 +26,9 @@ class NotificationEnvoyer(BaseModel):
     quantite          : Optional[float]  = None
     message           : Optional[str]    = None
     alerte_id         : Optional[int]    = None
+    # Destinataire spécifique (ex: utilisateur qui a fait le mouvement)
+    destinataire_email: Optional[str]    = None
+    destinataire_nom  : Optional[str]    = None
 
 
 # ═══════════════════════════════════════════════════════════

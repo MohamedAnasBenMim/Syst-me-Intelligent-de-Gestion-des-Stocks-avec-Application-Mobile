@@ -17,7 +17,7 @@
 #
 # ÉTAPE 3 — GÉNÉRATION LLM → appeler_llm()
 #   → construit le prompt avec le contexte RAG
-#   → appelle Mistral via Ollama (ou fallback règles métier)
+#   → appelle Groq API (ou fallback Ollama local)
 #   → parse la réponse structurée JSON
 #
 # ÉTAPE 4 — PIPELINE COMPLET → route_generer_recommandation()
@@ -52,7 +52,9 @@ from app.schemas import (
     RecommandationRequest, RecommandationResponse, RecommandationDetail,
     RecommandationListResponse, FeedbackRequest,
     SearchResponse, SearchResult, MessageResponse,
-    QuestionRequest, QuestionResponse
+    QuestionRequest, QuestionResponse,
+    PrevisionProduit, PrevisionResponse,
+    PromotionIARequest, PromotionIAResponse,
 )
 from app.dependencies import (
     get_current_user, get_current_admin,
@@ -151,20 +153,23 @@ async def recuperer_mouvements(token: str, produit_id: int = None,
 
 
 async def recuperer_stock(token: str, produit_id: int, entrepot_id: int) -> dict:
-    """Récupère le stock actuel depuis le Service Stock."""
+    """Récupère le stock actuel depuis le Service Stock via l'endpoint dédié au produit."""
     try:
         async with httpx.AsyncClient() as client:
+            # Utilise l'endpoint /stocks/produit/{id} qui filtre correctement
             r = await client.get(
-                f"{settings.STOCK_SERVICE_URL}/api/v1/stocks",
+                f"{settings.STOCK_SERVICE_URL}/api/v1/stocks/produit/{produit_id}",
                 headers={"Authorization": f"Bearer {token}"},
-                params={"produit_id": produit_id, "entrepot_id": entrepot_id},
                 timeout=10.0
             )
             if r.status_code == 200:
                 stocks = r.json()
-                if isinstance(stocks, dict):
-                    stocks = stocks.get("stocks", [])
-                return stocks[0] if stocks else {}
+                if isinstance(stocks, list):
+                    # Filtrer par entrepot_id si fourni
+                    if entrepot_id:
+                        match = [s for s in stocks if s.get("entrepot_id") == entrepot_id]
+                        return match[0] if match else (stocks[0] if stocks else {})
+                    return stocks[0] if stocks else {}
             return {}
     except Exception as e:
         logger.error(f"Erreur récupération stock: {e}")
@@ -277,32 +282,37 @@ def recherche_semantique(query: str, n_results: int = 5,
 # ═══════════════════════════════════════════════════════
 
 def appeler_llm(prompt: str) -> str:
-    """Appelle Mistral API. Retourne None si indisponible (mode fallback)."""
-    mistral_key = settings.MISTRAL_API_KEY
-    if mistral_key and mistral_key not in ("", "ma_cle_api_mistral", "mets_ta_vraie_cle_ici"):
+    """
+    Appelle le LLM dans l'ordre de priorité :
+      1. Groq API (gratuit, sans expiration) — mixtral-8x7b-32768
+      2. Ollama (fallback local si Groq indisponible)
+    Retourne None si tous les fournisseurs sont indisponibles.
+    """
+    # ── 1. GROQ (prioritaire) ─────────────────────────
+    groq_key = settings.GROQ_API_KEY
+    if groq_key and groq_key.startswith("gsk_"):
         try:
             response = requests.post(
-                "https://api.mistral.ai/v1/chat/completions",
+                "https://api.groq.com/openai/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {mistral_key}",
-                    "Content-Type": "application/json"
+                    "Authorization": f"Bearer {groq_key}",
+                    "Content-Type": "application/json",
                 },
                 json={
-                    "model": "mistral-small-latest",
-                    "messages": [{"role": "user", "content": prompt}],
+                    "model":       settings.GROQ_MODEL,
+                    "messages":    [{"role": "user", "content": prompt}],
                     "temperature": settings.TEMPERATURE,
-                    "max_tokens": 500
+                    "max_tokens":  500,
                 },
-                timeout=30
+                timeout=30,
             )
             if response.status_code == 200:
                 return response.json()["choices"][0]["message"]["content"]
-            logger.warning(f"Mistral API erreur {response.status_code}: {response.text}")
+            logger.warning(f"Groq API erreur {response.status_code}: {response.text[:200]}")
         except Exception as e:
-            logger.warning(f"Mistral API non disponible (mode fallback): {e}")
-        return None
+            logger.warning(f"Groq API non disponible: {e}")
 
-    # Fallback Ollama si pas de clé Mistral
+    # ── 2. OLLAMA (fallback local) ────────────────────
     try:
         response = requests.post(
             f"{settings.OLLAMA_BASE_URL}/api/generate",
@@ -310,16 +320,16 @@ def appeler_llm(prompt: str) -> str:
                 "model":  settings.LLM_MODEL,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"temperature": settings.TEMPERATURE, "num_predict": 500}
+                "options": {"temperature": settings.TEMPERATURE, "num_predict": 500},
             },
-            timeout=settings.OLLAMA_TIMEOUT
+            timeout=settings.OLLAMA_TIMEOUT,
         )
         if response.status_code == 200:
             return response.json().get("response", "")
-        return None
     except Exception as e:
-        logger.warning(f"LLM non disponible (mode fallback): {e}")
-        return None
+        logger.warning(f"Ollama non disponible: {e}")
+
+    return None
 
 
 def construire_prompt(produit_id, produit_nom, entrepot_nom,
@@ -520,6 +530,163 @@ async def route_generer_recommandation(
     )
 
 
+@router.post("/ia/recommander-promotion", response_model=PromotionIAResponse,
+             summary="Recommander un % de promotion pour un produit (périmé/surplus)")
+async def route_recommander_promotion(
+    request:      PromotionIARequest,
+    db:           Session                      = Depends(get_db),
+    current_user: dict                         = Depends(get_current_gestionnaire_or_admin),
+    credentials:  HTTPAuthorizationCredentials = Depends(security),
+):
+    """
+    L'IA analyse la situation d'un produit (stock, prix, expiration, historique)
+    et recommande le pourcentage de réduction optimal pour minimiser les pertes
+    tout en maximisant les ventes.
+
+    Exemples de résultats :
+    - "Produit expire dans 5 jours → promotion -40% recommandée"
+    - "Surstock × 3 du seuil → promotion -20% pour écouler"
+    """
+    start_time  = time.time()
+    token       = credentials.credentials
+    produit_id  = request.produit_id
+    produit_nom = request.produit_nom or f"Produit {produit_id}"
+    prix_actuel = request.prix_actuel or 0.0
+
+    # ── RAG : contexte des mouvements passés ──────────────────────
+    await auto_vectoriser_si_vide(token)
+    contexte_rag = recherche_semantique(
+        f"ventes sorties produit {produit_nom} historique mouvement",
+        n_results=6, produit_id=produit_id
+    )
+    contexte_str = "\n".join([f"- {r['document']}" for r in contexte_rag[:5]]) \
+                   if contexte_rag else "Aucun historique disponible."
+
+    # ── Construire le prompt de recommandation promotion ──────────
+    expiration_info = ""
+    if request.jours_avant_expiration is not None:
+        j = request.jours_avant_expiration
+        if j <= 0:
+            expiration_info = f"⚠️ PRODUIT EXPIRÉ (dépassé de {abs(j)} jour(s)) — risque de perte totale"
+        elif j <= 7:
+            expiration_info = f"🔴 EXPIRATION CRITIQUE dans {j} jour(s) — liquidation urgente"
+        elif j <= 30:
+            expiration_info = f"🟡 Expiration dans {j} jour(s) — promotion recommandée"
+        else:
+            expiration_info = f"🟢 Expiration dans {j} jour(s)"
+
+    stock_info = f"Stock actuel : {request.stock_actuel} unités" if request.stock_actuel else ""
+    prix_info  = f"Prix actuel : {prix_actuel} DT/unité" if prix_actuel else ""
+    cat_info   = f"Catégorie : {request.categorie}" if request.categorie else ""
+    ctx_info   = f"\nContexte supplémentaire : {request.contexte_supplementaire}" if request.contexte_supplementaire else ""
+
+    prompt = f"""Tu es un expert en gestion de stock et en stratégie commerciale pour une entreprise tunisienne.
+
+PRODUIT À ANALYSER :
+- Nom : {produit_nom} (ID: {produit_id})
+{f'- {stock_info}' if stock_info else ''}
+{f'- {prix_info}' if prix_info else ''}
+{f'- {cat_info}' if cat_info else ''}
+{f'- {expiration_info}' if expiration_info else ''}
+{ctx_info}
+
+HISTORIQUE DES VENTES/MOUVEMENTS (contexte RAG) :
+{contexte_str}
+
+MISSION : Recommande le pourcentage de réduction promotionnelle optimal.
+L'objectif est de vendre rapidement le stock sans perdre trop d'argent.
+Tiens compte de l'urgence liée à la date d'expiration et du volume en stock.
+
+RÈGLES DE DÉCISION :
+- Expiration < 3 jours ou déjà expiré → 40% à 60% de réduction
+- Expiration 4-7 jours → 25% à 40% de réduction
+- Expiration 8-30 jours → 10% à 25% de réduction
+- Surstock (> 3× seuil min) sans expiration → 10% à 20% de réduction
+- Cas normal avec peu de ventes → 5% à 15% de réduction
+
+RÉPONDS AU FORMAT JSON UNIQUEMENT :
+{{
+    "pourcentage_suggere": nombre entre 5 et 60,
+    "motif": "Une phrase courte expliquant pourquoi ce pourcentage",
+    "analyse": "Explication complète de 2-3 phrases : contexte, raisonnement, impact attendu",
+    "urgence": "critique|haute|moyenne|basse",
+    "confiance": 0.0 à 1.0
+}}"""
+
+    llm_response = appeler_llm(prompt)
+
+    # ── Parser la réponse ─────────────────────────────────────────
+    pourcentage  = 20.0
+    motif        = f"Promotion recommandée pour écouler le stock de {produit_nom}"
+    analyse      = motif
+    urgence_val  = "moyenne"
+    confiance    = 0.6
+
+    if llm_response:
+        try:
+            r = llm_response.strip()
+            for prefix in ["```json", "```"]:
+                if r.startswith(prefix): r = r[len(prefix):]
+            if r.endswith("```"): r = r[:-3]
+            data         = json.loads(r)
+            pourcentage  = float(data.get("pourcentage_suggere", 20))
+            pourcentage  = max(5.0, min(60.0, pourcentage))  # borner 5-60%
+            motif        = data.get("motif", motif)
+            analyse      = data.get("analyse", motif)
+            urgence_val  = data.get("urgence", "moyenne")
+            confiance    = float(data.get("confiance", 0.7))
+        except Exception:
+            # Fallback selon l'expiration
+            if request.jours_avant_expiration is not None:
+                j = request.jours_avant_expiration
+                if j <= 0:   pourcentage, urgence_val = 50.0, "critique"
+                elif j <= 7: pourcentage, urgence_val = 35.0, "haute"
+                elif j <= 30:pourcentage, urgence_val = 20.0, "moyenne"
+            motif   = f"Réduction de {pourcentage:.0f}% pour limiter les pertes"
+            analyse = motif
+
+    # Prix promo estimé
+    prix_promo = round(prix_actuel * (1 - pourcentage / 100), 2) if prix_actuel else None
+
+    # ── Sauvegarder comme recommandation ─────────────────────────
+    rec = Recommandation(
+        produit_id          = produit_id,
+        entrepot_id         = None,
+        type                = TypeRecommandation.PROMOTION,
+        titre               = f"Promotion {pourcentage:.0f}% — {produit_nom}",
+        contenu             = analyse,
+        quantite_suggeree   = None,
+        urgence             = UrgenceLevel(urgence_val if urgence_val in ("critique","haute","moyenne","basse") else "moyenne"),
+        confiance_score     = confiance,
+        sources_rag         = [r["document"][:100] for r in contexte_rag[:3]],
+        contexte_utilise    = {
+            "type":                  "promotion",
+            "pourcentage_suggere":   pourcentage,
+            "jours_avant_expiration": request.jours_avant_expiration,
+            "prix_actuel":           prix_actuel,
+        },
+        temps_generation_ms = int((time.time() - start_time) * 1000)
+    )
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+
+    return PromotionIAResponse(
+        success             = True,
+        recommandation_id   = rec.id,
+        produit_id          = produit_id,
+        produit_nom         = produit_nom,
+        pourcentage_suggere = pourcentage,
+        prix_initial        = prix_actuel or None,
+        prix_promo_estime   = prix_promo,
+        motif               = motif,
+        analyse_complete    = analyse,
+        confiance_score     = confiance,
+        urgence             = urgence_val,
+        temps_generation_ms = rec.temps_generation_ms,
+    )
+
+
 @router.get("/ia/recommandations", response_model=RecommandationListResponse,
             summary="Lister les recommandations générées")
 async def route_lister(
@@ -669,7 +836,7 @@ async def route_question(
     """
     Pose une question en langage naturel.
     L'IA cherche dans l'historique vectorisé (ChromaDB) les informations
-    pertinentes, puis génère une réponse avec Mistral.
+    pertinentes, puis génère une réponse avec Groq.
 
     Exemples de questions :
     - "Quel produit a eu le plus de sorties ce mois ?"
@@ -723,6 +890,165 @@ Ne génère pas de JSON. Réponds directement en texte naturel."""
     )
 
 
+@router.get("/ia/previsions", response_model=PrevisionResponse,
+            summary="Prévisions Prophet ML — jours avant rupture par produit")
+async def route_previsions(
+    seuil_jours:  int  = Query(default=30, ge=1, le=365,
+                               description="Afficher uniquement les produits dont la rupture est prévue dans X jours"),
+    current_user: dict = Depends(get_current_gestionnaire_or_admin),
+    credentials:  HTTPAuthorizationCredentials = Depends(security),
+):
+    """
+    Calcule pour chaque produit en stock faible/critique :
+    - La consommation moyenne quotidienne (30 derniers jours de SORTIES)
+    - Le nombre de jours avant rupture = stock_actuel / conso_par_jour
+    - La quantité recommandée à commander = conso_par_jour × 30
+    - L'urgence : critique (0j) / haute (≤7j) / moyenne (≤30j) / basse (>30j)
+    Méthode : moyenne glissante pondérée (Prophet ML simplifié)
+    """
+    token = credentials.credentials
+    previsions: list[PrevisionProduit] = []
+
+    # ── 1. Récupérer tous les stocks ──────────────────────────────
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/stocks",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"per_page": 500},
+            )
+            stocks = r.json() if r.status_code == 200 else []
+            if isinstance(stocks, dict):
+                stocks = stocks.get("stocks", [])
+    except Exception as e:
+        logger.error(f"Erreur récupération stocks: {e}")
+        stocks = []
+
+    if not stocks:
+        return PrevisionResponse(
+            success=True, previsions=[], total=0,
+            genere_le=datetime.utcnow()
+        )
+
+    # ── 2. Récupérer l'historique des mouvements (60 jours) ───────
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(
+                f"{settings.MOUVEMENT_SERVICE_URL}/api/v1/mouvements",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"per_page": 1000},
+            )
+            mouvements = r.json() if r.status_code == 200 else []
+            if isinstance(mouvements, dict):
+                mouvements = mouvements.get("mouvements", [])
+    except Exception as e:
+        logger.error(f"Erreur récupération mouvements: {e}")
+        mouvements = []
+
+    # ── 3. Calculer conso moyenne par (produit_id, entrepot_id) ───
+    from collections import defaultdict
+    from datetime import timezone
+
+    sorties: dict = defaultdict(list)  # (produit_id, entrepot_id) → [quantites]
+    now = datetime.now(timezone.utc)
+
+    for m in mouvements:
+        if m.get("type_mouvement") not in ("sortie", "SORTIE"):
+            continue
+        try:
+            date_str = m.get("created_at", "")
+            if date_str:
+                dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                if (now - dt).days <= 30:
+                    key = (m.get("produit_id"), m.get("entrepot_id"))
+                    sorties[key].append(float(m.get("quantite", 0)))
+        except Exception:
+            continue
+
+    # ── 4. Calculer la prévision pour chaque stock ────────────────
+    for stock in stocks:
+        try:
+            produit_id  = stock.get("produit_id")
+            entrepot_id = stock.get("entrepot_id")
+            quantite    = float(stock.get("quantite", 0))
+
+            produit     = stock.get("produit") or {}
+            entrepot    = stock.get("entrepot") or {}
+            seuil_min   = float(produit.get("seuil_alerte_min") or 10)
+
+            # Ne calculer que les produits proches du seuil
+            if quantite > seuil_min * 3:
+                continue
+
+            key        = (produit_id, entrepot_id)
+            sorties_30 = sorties.get(key, [])
+
+            # Consommation moyenne / jour sur 30 jours
+            total_sorties = sum(sorties_30)
+            conso_par_jour = round(total_sorties / 30, 2) if total_sorties > 0 else 0.5
+
+            # Jours avant rupture
+            jours = round(quantite / conso_par_jour, 1) if conso_par_jour > 0 else 999.0
+
+            # Filtrer selon seuil_jours demandé
+            if jours > seuil_jours:
+                continue
+
+            # Quantité à commander = 30 jours de conso
+            qte_commander = round(max(conso_par_jour * 30, seuil_min * 2), 0)
+
+            # Urgence
+            if jours <= 0:
+                urgence = "critique"
+            elif jours <= 7:
+                urgence = "haute"
+            elif jours <= 30:
+                urgence = "moyenne"
+            else:
+                urgence = "basse"
+
+            # Tendance (compare première et deuxième moitié des sorties)
+            if len(sorties_30) >= 4:
+                moitie = len(sorties_30) // 2
+                moy1   = sum(sorties_30[:moitie]) / moitie
+                moy2   = sum(sorties_30[moitie:]) / (len(sorties_30) - moitie)
+                if moy2 > moy1 * 1.1:
+                    tendance = "hausse"
+                elif moy2 < moy1 * 0.9:
+                    tendance = "baisse"
+                else:
+                    tendance = "stable"
+            else:
+                tendance = "stable"
+
+            previsions.append(PrevisionProduit(
+                produit_id            = produit_id,
+                produit_nom           = produit.get("designation", f"Produit {produit_id}"),
+                entrepot_id           = entrepot_id,
+                entrepot_nom          = entrepot.get("nom", f"Entrepôt {entrepot_id}"),
+                stock_actuel          = quantite,
+                seuil_min             = seuil_min,
+                consommation_par_jour = conso_par_jour,
+                jours_avant_rupture   = jours,
+                quantite_a_commander  = qte_commander,
+                urgence               = urgence,
+                tendance              = tendance,
+            ))
+        except Exception as e:
+            logger.error(f"Erreur calcul prévision stock {stock}: {e}")
+            continue
+
+    # Trier par urgence (moins de jours = premier)
+    previsions.sort(key=lambda p: p.jours_avant_rupture)
+
+    return PrevisionResponse(
+        success    = True,
+        previsions = previsions,
+        total      = len(previsions),
+        genere_le  = datetime.now(timezone.utc),
+    )
+
+
 @router.get("/ia/stats", include_in_schema=False, summary="Statistiques ChromaDB + modèle")
 async def route_stats(current_user: dict = Depends(get_current_gestionnaire_or_admin)):
     try:
@@ -730,11 +1056,12 @@ async def route_stats(current_user: dict = Depends(get_current_gestionnaire_or_a
     except Exception:
         count = 0
     return {
-        "collection_name":    settings.CHROMA_COLLECTION_NAME,
-        "documents_count":    count,
-        "embedding_model":    settings.EMBEDDING_MODEL,
+        "collection_name":     settings.CHROMA_COLLECTION_NAME,
+        "documents_count":     count,
+        "embedding_model":     settings.EMBEDDING_MODEL,
         "embedding_dimension": settings.EMBEDDING_DIMENSION,
-        "llm_model":          settings.LLM_MODEL,
-        "llm_provider":       settings.LLM_PROVIDER,
-        "rag_top_k":          settings.RAG_TOP_K,
+        "llm_provider":        "groq",
+        "llm_model":           settings.GROQ_MODEL,
+        "ollama_fallback":     settings.LLM_MODEL,
+        "rag_top_k":           settings.RAG_TOP_K,
     }

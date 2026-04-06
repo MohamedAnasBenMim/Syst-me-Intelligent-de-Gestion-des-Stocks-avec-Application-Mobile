@@ -5,6 +5,33 @@ from datetime import datetime
 
 
 # ═══════════════════════════════════════════════════════════
+# SCHEMAS PRODUIT / STOCK (reçus depuis Service-Stock)
+# ═══════════════════════════════════════════════════════════
+
+class ProduitResume(BaseModel):
+    """Informations essentielles du produit pour l'affichage dans l'entrepôt."""
+    id           : int
+    reference    : Optional[str]   = None
+    designation  : Optional[str]   = None
+    categorie    : Optional[str]   = None
+    unite_mesure : Optional[str]   = None
+    prix_unitaire: Optional[float] = None
+
+    model_config = {"from_attributes": True}
+
+
+class StockEntrepot(BaseModel):
+    """Stock d'un produit dans l'entrepôt — reçu depuis Service-Stock."""
+    id            : int
+    produit_id    : int
+    quantite      : float
+    niveau_alerte : Optional[str]  = None
+    produit       : Optional[ProduitResume] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ═══════════════════════════════════════════════════════════
 # SCHEMAS ZONE
 # ═══════════════════════════════════════════════════════════
 
@@ -171,6 +198,7 @@ class EntrepotResponse(EntrepotBase):
     capacite_utilisee: float
     taux_occupation: float = 0.0
     zones: list[ZoneResponse] = []
+    stocks: list[StockEntrepot] = []
     created_at: datetime
     updated_at: Optional[datetime] = None
 

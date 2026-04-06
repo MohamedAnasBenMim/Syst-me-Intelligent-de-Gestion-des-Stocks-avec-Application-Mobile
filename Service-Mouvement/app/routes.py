@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from typing import Optional
+from datetime import date
 import httpx
 
 from app.database import get_db
@@ -94,6 +95,21 @@ async def appeler_stock_diminuer(
     return response.json()
 
 
+async def verifier_anomalies_mouvement(token: str):
+    """
+    Appelle Service Alertes pour déclencher la détection d'anomalies
+    après chaque nouveau mouvement. Ne bloque pas si le service ne répond pas.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(
+                f"{settings.ALERTES_SERVICE_URL}/api/v1/alertes/anomalies/detecter",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except Exception:
+        pass  # Service Alertes indisponible → on continue sans bloquer
+
+
 async def indexer_mouvement_dans_rag(mouvement_id: int, produit_id: int,
                                       entrepot_id: int, token: str):
     """
@@ -130,6 +146,149 @@ async def recuperer_nom_entrepot(entrepot_id: int, token: str) -> str:
     except Exception:
         pass
     return f"Entrepôt {entrepot_id}"
+
+
+async def recuperer_nom_zone(zone_id: int, token: str) -> str:
+    """
+    Appelle Service Warehouse GET /zones/{id}
+    pour récupérer le nom de la zone (dénormalisation).
+    Retourne "Zone {id}" si le service ne répond pas.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/zones/{zone_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=5.0
+            )
+        if response.status_code == 200:
+            return response.json().get("nom", f"Zone {zone_id}")
+    except Exception:
+        pass
+    return f"Zone {zone_id}"
+
+
+async def recuperer_produit_details(produit_id: int, token: str) -> dict:
+    """
+    Appelle Service Stock GET /produits/{id}
+    pour récupérer tous les détails du produit (dont date_expiration et reference).
+    Retourne {} si indisponible.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/produits/{produit_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=5.0
+            )
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass
+    return {}
+
+
+async def assigner_reference_produit(produit_id: int, token: str) -> None:
+    """
+    Appelle Service Stock PATCH /produits/{id}/ajouter-reference
+    pour auto-générer et assigner une référence au produit.
+    Ne bloque pas si le service ne répond pas.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.patch(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/produits/{produit_id}/ajouter-reference",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=5.0
+            )
+    except Exception:
+        pass
+
+
+async def appeler_ia_recommandation_expiration(
+    produit_id: int,
+    produit_nom: str,
+    entrepot_id: int,
+    stock_actuel: float,
+    prix_actuel: float,
+    jours_restants: int,
+    date_expiration: str,
+    token: str,
+) -> str | None:
+    """
+    Appelle Service IA-RAG POST /ia/recommander-promotion pour un produit proche de l'expiration.
+    Retourne le texte de recommandation IA (pourcentage + motif),
+    ou None si l'IA ne répond pas dans les 10 secondes.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(
+                f"{settings.IA_RAG_SERVICE_URL}/api/v1/ia/recommander-promotion",
+                json={
+                    "produit_id":              produit_id,
+                    "produit_nom":             produit_nom,
+                    "stock_actuel":            stock_actuel,
+                    "prix_actuel":             prix_actuel,
+                    "jours_avant_expiration":  jours_restants,
+                    "contexte_supplementaire": f"Date d'expiration : {date_expiration}",
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("success"):
+                pct    = data.get("pourcentage_suggere", 0)
+                motif  = data.get("motif", "")
+                prix_p = data.get("prix_promo_estime")
+                msg    = f"Promotion -{pct:.0f}% recommandée"
+                if prix_p:
+                    msg += f" (prix promo : {prix_p} DT)"
+                if motif:
+                    msg += f" — {motif}"
+                return msg
+    except Exception:
+        pass
+    return None  # IA indisponible → fallback sur texte par défaut
+
+
+async def declencher_alerte_expiration(
+    produit_id: int,
+    produit_nom: str,
+    entrepot_id: int,
+    entrepot_nom: str,
+    quantite: float,
+    date_expiration: str,
+    jours_restants: int,
+    token: str,
+) -> None:
+    """
+    Appelle Service Alertes pour déclencher une alerte d'expiration proche.
+    La recommandation IA (promotion) est générée automatiquement par Service Alertes.
+    Ne bloque pas si le service ne répond pas.
+    """
+    message = (
+        f"📅 EXPIRATION PROCHE — {produit_nom} dans {entrepot_nom} — "
+        f"Date d'expiration : {date_expiration} (dans {jours_restants} jour(s)) — "
+        f"Quantité en stock : {quantite} — "
+        f"Recommandation IA : envisager une promotion pour écouler le stock avant expiration."
+    )
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{settings.ALERTES_SERVICE_URL}/api/v1/alertes/declencher",
+                json={
+                    "produit_id":        produit_id,
+                    "produit_nom":       produit_nom,
+                    "entrepot_id":       entrepot_id,
+                    "entrepot_nom":      entrepot_nom,
+                    "niveau":            "expiration_proche",
+                    "quantite_actuelle": quantite,
+                    "message":           message,
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except Exception:
+        pass  # Service Alertes indisponible → on continue sans bloquer
 
 
 async def recuperer_nom_produit(produit_id: int, token: str) -> str:
@@ -178,6 +337,27 @@ async def creer_mouvement(
     # credentials.credentials = le token JWT brut sans "Bearer "
     token = credentials.credentials
 
+    # ── Validations spécifiques aux mouvements d'ENTREE ───────
+    if data.type_mouvement == TypeMouvement.ENTREE:
+        produit_details = await recuperer_produit_details(data.produit_id, token)
+
+        # 1. Vérifier que la date d'expiration ≠ aujourd'hui
+        date_expiration_str = produit_details.get("date_expiration")
+        if date_expiration_str:
+            date_exp = date.fromisoformat(date_expiration_str)
+            if date_exp == date.today():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Mouvement d'entrée refusé : le produit expire aujourd'hui ({date_expiration_str}). "
+                        "Veuillez retirer ce produit du circuit."
+                    )
+                )
+
+        # 2. Auto-assigner une référence si le produit n'en a pas
+        if not produit_details.get("reference"):
+            await assigner_reference_produit(data.produit_id, token)
+
     # ── Récupérer les noms pour dénormalisation ────────────────
     produit_nom = data.produit_nom or await recuperer_nom_produit(
         data.produit_id, token
@@ -194,6 +374,17 @@ async def creer_mouvement(
         entrepot_dest_nom = await recuperer_nom_entrepot(
             data.entrepot_dest_id, token
         )
+
+    # ── Récupérer les noms des zones selon le type de mouvement ──
+    zone_source_nom = data.zone_source_nom
+    if data.zone_source_id and not zone_source_nom:
+        if data.type_mouvement in (TypeMouvement.SORTIE, TypeMouvement.TRANSFERT):
+            zone_source_nom = await recuperer_nom_zone(data.zone_source_id, token)
+
+    zone_dest_nom = data.zone_dest_nom
+    if data.zone_dest_id and not zone_dest_nom:
+        if data.type_mouvement in (TypeMouvement.ENTREE, TypeMouvement.TRANSFERT):
+            zone_dest_nom = await recuperer_nom_zone(data.zone_dest_id, token)
 
     # ── Orchestration selon le type de mouvement ──────────────
     if data.type_mouvement == TypeMouvement.ENTREE:
@@ -246,12 +437,14 @@ async def creer_mouvement(
         entrepot_dest_id    = data.entrepot_dest_id,
         entrepot_dest_nom   = entrepot_dest_nom,
         zone_source_id      = data.zone_source_id,
+        zone_source_nom     = zone_source_nom,
         zone_dest_id        = data.zone_dest_id,
+        zone_dest_nom       = zone_dest_nom,
         reference           = data.reference,
         motif               = data.motif,
         note                = data.note,
         utilisateur_id      = current_user.get("user_id"),
-        utilisateur_nom     = current_user.get("email"),
+        utilisateur_nom     = current_user.get("email") or current_user.get("nom"),
     )
     db.add(nouveau_mouvement)
     db.commit()
@@ -263,7 +456,92 @@ async def creer_mouvement(
         data.entrepot_dest_id or data.entrepot_source_id, token
     )
 
-    return nouveau_mouvement
+    # Détection automatique d'anomalies — envoie email si anomalie détectée
+    await verifier_anomalies_mouvement(token)
+
+    # ── Construire la réponse avec avertissements (ENTREE uniquement) ──
+    avertissements = []
+
+    if data.type_mouvement == TypeMouvement.ENTREE:
+        date_exp_str = produit_details.get("date_expiration")
+        if date_exp_str:
+            date_exp      = date.fromisoformat(date_exp_str)
+            jours_restants = (date_exp - date.today()).days
+
+            if jours_restants <= 0:
+                # Déjà expiré (cas normalement bloqué plus haut, sécurité)
+                avertissements.append(
+                    f"⛔ Ce produit est périmé depuis le {date_exp_str}. "
+                    "Ne pas mettre en vente — retirez-le du stock immédiatement."
+                )
+            elif jours_restants == 0:
+                avertissements.append(
+                    f"🚨 Ce produit expire AUJOURD'HUI ({date_exp_str}). "
+                    "Il ne doit pas être acheté ni mis en vente."
+                )
+            elif jours_restants <= 7:
+                # ── Appel IA synchrone (promotion recommandée) ──
+                prix_actuel = float(produit_details.get("prix_unitaire") or 0)
+                recommandation_ia = await appeler_ia_recommandation_expiration(
+                    produit_id      = data.produit_id,
+                    produit_nom     = produit_nom,
+                    entrepot_id     = data.entrepot_dest_id,
+                    stock_actuel    = data.quantite,
+                    prix_actuel     = prix_actuel,
+                    jours_restants  = jours_restants,
+                    date_expiration = date_exp_str,
+                    token           = token,
+                )
+                texte_ia = (
+                    f" Recommandation IA : {recommandation_ia}"
+                    if recommandation_ia
+                    else " Lancez une promotion immédiate pour écouler le stock."
+                )
+                avertissements.append(
+                    f"🔴 EXPIRATION TRÈS PROCHE — {produit_nom} expire dans "
+                    f"{jours_restants} jour(s) ({date_exp_str}). "
+                    f"Ne pas recommander l'achat.{texte_ia}"
+                )
+            elif jours_restants <= 30:
+                # ── Appel IA synchrone (promotion recommandée) ──
+                prix_actuel = float(produit_details.get("prix_unitaire") or 0)
+                recommandation_ia = await appeler_ia_recommandation_expiration(
+                    produit_id      = data.produit_id,
+                    produit_nom     = produit_nom,
+                    entrepot_id     = data.entrepot_dest_id,
+                    stock_actuel    = data.quantite,
+                    prix_actuel     = prix_actuel,
+                    jours_restants  = jours_restants,
+                    date_expiration = date_exp_str,
+                    token           = token,
+                )
+                texte_ia = (
+                    f" Recommandation IA : {recommandation_ia}"
+                    if recommandation_ia
+                    else " Envisager une promotion pour écouler le stock."
+                )
+                avertissements.append(
+                    f"⚠️ Expiration proche — {produit_nom} expire dans "
+                    f"{jours_restants} jour(s) ({date_exp_str}).{texte_ia}"
+                )
+
+            # Déclencher l'alerte async (email + IA) si expiration ≤ 30 jours
+            if 0 < jours_restants <= 30:
+                await declencher_alerte_expiration(
+                    produit_id      = data.produit_id,
+                    produit_nom     = produit_nom,
+                    entrepot_id     = data.entrepot_dest_id,
+                    entrepot_nom    = entrepot_dest_nom or f"Entrepôt {data.entrepot_dest_id}",
+                    quantite        = data.quantite,
+                    date_expiration = date_exp_str,
+                    jours_restants  = jours_restants,
+                    token           = token,
+                )
+
+    # ── Construire la réponse finale avec les avertissements ──────
+    reponse = MouvementResponse.model_validate(nouveau_mouvement)
+    reponse.avertissements = avertissements if avertissements else None
+    return reponse
 
 
 @router.get(
@@ -370,14 +648,24 @@ async def modifier_mouvement(
 @router.delete(
     "/mouvements/{mouvement_id}",
     response_model=MessageResponse,
-    summary="Annuler un mouvement",
-    description="Annule un mouvement en changeant son statut à 'annule'. Réservé à l'administrateur."
+    summary="Annuler un mouvement et corriger le stock",
+    description="""
+    Annule un mouvement et **inverse automatiquement le stock** :
+    - **ENTREE annulée**    → diminue le stock de entrepot_dest (on retire ce qui a été ajouté)
+    - **SORTIE annulée**    → augmente le stock de entrepot_source (on remet ce qui a été retiré)
+    - **TRANSFERT annulé**  → augmente entrepot_source + diminue entrepot_dest (on inverse le transfert)
+
+    Réservé au gestionnaire et à l'administrateur.
+    """
 )
 async def annuler_mouvement(
     mouvement_id : int,
-    db           : Session = Depends(get_db),
-    current_user : dict    = Depends(get_current_admin)
+    db           : Session                      = Depends(get_db),
+    current_user : dict                         = Depends(get_current_gestionnaire_or_admin),
+    credentials  : HTTPAuthorizationCredentials = Depends(security)
 ):
+    token = credentials.credentials
+
     mouvement = db.query(Mouvement).filter(
         Mouvement.id == mouvement_id
     ).first()
@@ -392,8 +680,55 @@ async def annuler_mouvement(
             detail="Ce mouvement est déjà annulé"
         )
 
+    # ── Inverser le stock selon le type de mouvement ──────────
+    try:
+        if mouvement.type_mouvement == TypeMouvement.ENTREE:
+            # ENTREE → on diminue le stock de l'entrepôt destination
+            await appeler_stock_diminuer(
+                produit_id   = mouvement.produit_id,
+                entrepot_id  = mouvement.entrepot_dest_id,
+                quantite     = mouvement.quantite,
+                token        = token,
+                mouvement_ref= f"ANNULATION-{mouvement_id}"
+            )
+
+        elif mouvement.type_mouvement == TypeMouvement.SORTIE:
+            # SORTIE → on augmente le stock de l'entrepôt source
+            await appeler_stock_augmenter(
+                produit_id   = mouvement.produit_id,
+                entrepot_id  = mouvement.entrepot_source_id,
+                quantite     = mouvement.quantite,
+                token        = token,
+                mouvement_ref= f"ANNULATION-{mouvement_id}"
+            )
+
+        elif mouvement.type_mouvement == TypeMouvement.TRANSFERT:
+            # TRANSFERT → on réaugmente la source et on rediminue la destination
+            await appeler_stock_augmenter(
+                produit_id   = mouvement.produit_id,
+                entrepot_id  = mouvement.entrepot_source_id,
+                quantite     = mouvement.quantite,
+                token        = token,
+                mouvement_ref= f"ANNULATION-{mouvement_id}"
+            )
+            await appeler_stock_diminuer(
+                produit_id   = mouvement.produit_id,
+                entrepot_id  = mouvement.entrepot_dest_id,
+                quantite     = mouvement.quantite,
+                token        = token,
+                mouvement_ref= f"ANNULATION-{mouvement_id}"
+            )
+
+    except HTTPException as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Impossible d'annuler : correction du stock échouée — {e.detail}"
+        )
+
+    # ── Marquer le mouvement comme annulé ─────────────────────
     mouvement.statut = StatutMouvement.ANNULE
     db.commit()
+
     return MessageResponse(
-        message=f"Mouvement {mouvement_id} annulé avec succès"
+        message=f"Mouvement {mouvement_id} annulé — stock corrigé automatiquement"
     )

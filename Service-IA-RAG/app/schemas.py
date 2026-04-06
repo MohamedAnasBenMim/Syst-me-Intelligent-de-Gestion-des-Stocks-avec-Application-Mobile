@@ -133,6 +133,61 @@ class QuestionResponse(BaseModel):
 
 
 # ══════════════════════════════════════════════════════════
+# PRÉVISIONS PROPHET ML
+# ══════════════════════════════════════════════════════════
+
+class PrevisionProduit(BaseModel):
+    produit_id:           int
+    produit_nom:          str
+    entrepot_id:          int
+    entrepot_nom:         str
+    stock_actuel:         float
+    seuil_min:            float
+    consommation_par_jour: float          # moyenne sur 30 jours
+    jours_avant_rupture:  float           # stock_actuel / conso_jour
+    quantite_a_commander: float           # conso * 30 jours
+    urgence:              str             # critique / haute / moyenne / basse
+    tendance:             str             # hausse / baisse / stable
+
+
+class PrevisionResponse(BaseModel):
+    success:       bool
+    previsions:    List[PrevisionProduit]
+    total:         int
+    genere_le:     datetime
+    methode:       str = "Prophet ML (consommation moyenne glissante 30j)"
+
+
+# ══════════════════════════════════════════════════════════
+# PROMOTION IA
+# ══════════════════════════════════════════════════════════
+
+class PromotionIARequest(BaseModel):
+    produit_id:              int            = Field(..., gt=0)
+    produit_nom:             Optional[str]  = None
+    stock_actuel:            Optional[float] = None
+    prix_actuel:             Optional[float] = None
+    jours_avant_expiration:  Optional[int]  = None   # None = pas d'expiration connue
+    categorie:               Optional[str]  = None
+    contexte_supplementaire: Optional[str]  = None
+
+
+class PromotionIAResponse(BaseModel):
+    success:              bool
+    recommandation_id:    int
+    produit_id:           int
+    produit_nom:          str
+    pourcentage_suggere:  float   # ex: 25.0 = 25% de réduction
+    prix_initial:         Optional[float] = None
+    prix_promo_estime:    Optional[float] = None
+    motif:                str     # explication courte (1-2 phrases)
+    analyse_complete:     str     # texte complet de l'IA
+    confiance_score:      float   # 0.0 → 1.0
+    urgence:              str     # critique / haute / moyenne / basse
+    temps_generation_ms:  int
+
+
+# ══════════════════════════════════════════════════════════
 # UTILITAIRES
 # ══════════════════════════════════════════════════════════
 

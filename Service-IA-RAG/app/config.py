@@ -4,7 +4,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
 from functools import lru_cache
 from typing import Literal
-import os
 
 
 class IARAGSettings(BaseSettings):
@@ -39,18 +38,14 @@ class IARAGSettings(BaseSettings):
     EMBEDDING_MODEL:     str = "sentence-transformers/all-MiniLM-L6-v2"
     EMBEDDING_DIMENSION: int = 384
 
-    # LLM Configuration (Mistral API / Ollama fallback)
-    LLM_PROVIDER:    Literal["ollama", "huggingface"] = "ollama"
+    # Groq API — LLM principal (gratuit, sans expiration)
+    GROQ_API_KEY: str = Field(default="")
+    GROQ_MODEL:   str = Field(default="llama-3.3-70b-versatile")
+
+    # Ollama — fallback local (si Groq indisponible)
     LLM_MODEL:       str = "mistral:7b"
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_TIMEOUT:  int = 30
-
-    # Mistral API (prioritaire sur Ollama)
-    MISTRAL_API_KEY: str = Field(default="33TYwx0LKa1qFyiYrgQNJVnh5HOBTeAH")
-
-    # HuggingFace API (fallback si Ollama indisponible)
-    HUGGINGFACE_API_KEY: str = Field(default="")
-    HUGGINGFACE_MODEL:   str = "mistralai/Mistral-7B-Instruct-v0.2"
 
     # RAG Configuration
     RAG_TOP_K:          int   = 5

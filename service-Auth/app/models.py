@@ -3,7 +3,7 @@
 
 from sqlalchemy import (
     Column, Integer, String,
-    DateTime, Boolean
+    DateTime, Boolean, Float
 )
 from sqlalchemy.sql import func
 from app.database import Base
@@ -22,6 +22,7 @@ class Utilisateur(Base):
     password   = Column(String(200), nullable=False)
     role       = Column(String(50),  nullable=False, default="operateur")
     # admin | gestionnaire | operateur
+    salaire    = Column(Float, nullable=True)    # DT/mois — renseigné par l'admin
     est_actif  = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

@@ -1,0 +1,184 @@
+{
+  "name": "SGS — Vérification Expirations Quotidienne",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "node-schedule",
+      "name": "Tous les jours à 8h00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://service-auth:8001/api/v1/auth/login",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "email",
+              "value": "admin@sgs.com"
+            },
+            {
+              "name": "password",
+              "value": "votre_mot_de_passe_admin"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-login",
+      "name": "Login — Obtenir Token JWT",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://service-alertes:8005/api/v1/alertes/verifier-expirations?seuil_jours=30",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Login — Obtenir Token JWT').item.json.access_token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-verifier",
+      "name": "Vérifier Expirations Stock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.alertes_declenchees }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "node-if",
+      "name": "Des alertes ont été créées ?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "résumé",
+              "value": "={{ $('Vérifier Expirations Stock').item.json.alertes_declenchees }} alerte(s) d'expiration déclenchée(s) — {{ $('Vérifier Expirations Stock').item.json.produits_analyses }} produit(s) analysé(s)"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-log-alertes",
+      "name": "Log — Alertes créées",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "résumé",
+              "value": "Aucune expiration proche détectée — {{ $('Vérifier Expirations Stock').item.json.produits_analyses }} produit(s) analysé(s)"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-log-ok",
+      "name": "Log — Tout est OK",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [1120, 420]
+    }
+  ],
+  "connections": {
+    "Tous les jours à 8h00": {
+      "main": [
+        [
+          {
+            "node": "Login — Obtenir Token JWT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Login — Obtenir Token JWT": {
+      "main": [
+        [
+          {
+            "node": "Vérifier Expirations Stock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vérifier Expirations Stock": {
+      "main": [
+        [
+          {
+            "node": "Des alertes ont été créées ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Des alertes ont été créées ?": {
+      "main": [
+        [
+          {
+            "node": "Log — Alertes créées",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log — Tout est OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Africa/Tunis",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all"
+  },
+  "tags": ["SGS", "Expirations", "Automatisation"]
+}

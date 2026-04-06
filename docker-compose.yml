@@ -69,6 +69,7 @@ services:
     environment:
       WAREHOUSE_DATABASE_URL: postgresql://postgres:admin@postgres:5432/sgs_warehouse
       AUTH_SERVICE_URL:        http://service-auth:8001
+      STOCK_SERVICE_URL:       http://service-stock:8003
     depends_on:
       postgres:
         condition: service_healthy
@@ -111,6 +112,8 @@ services:
       AUTH_SERVICE_URL:       http://service-auth:8001
       STOCK_SERVICE_URL:      http://service-stock:8003
       WAREHOUSE_SERVICE_URL:  http://service-warehouse:8002
+      ALERTES_SERVICE_URL:    http://service-alertes:8005
+      IA_RAG_SERVICE_URL:     http://service-ia-rag:8008
     depends_on:
       postgres:
         condition: service_healthy
@@ -128,12 +131,13 @@ services:
       - "8005:8005"
     env_file: .env
     environment:
-      ALERTE_DATABASE_URL:     postgresql://postgres:admin@postgres:5432/sgs_alert
-      AUTH_SERVICE_URL:        http://service-auth:8001
-      STOCK_SERVICE_URL:       http://service-stock:8003
-      WAREHOUSE_SERVICE_URL:   http://service-warehouse:8002
+      ALERTE_DATABASE_URL:      postgresql://postgres:admin@postgres:5432/sgs_alert
+      AUTH_SERVICE_URL:         http://service-auth:8001
+      STOCK_SERVICE_URL:        http://service-stock:8003
+      WAREHOUSE_SERVICE_URL:    http://service-warehouse:8002
+      MOUVEMENT_SERVICE_URL:    http://service-mouvement:8004
       NOTIFICATION_SERVICE_URL: http://service-notification:8006
-      IA_RAG_SERVICE_URL:      http://service-ia-rag:8008
+      IA_RAG_SERVICE_URL:       http://service-ia-rag:8008
     depends_on:
       postgres:
         condition: service_healthy
@@ -176,6 +180,7 @@ services:
       STOCK_SERVICE_URL:      http://service-stock:8003
       MOUVEMENT_SERVICE_URL:  http://service-mouvement:8004
       ALERTE_SERVICE_URL:     http://service-alertes:8005
+      IA_RAG_SERVICE_URL:     http://service-ia-rag:8008
     depends_on:
       postgres:
         condition: service_healthy
@@ -185,6 +190,22 @@ services:
         condition: service_started
     networks:
       - sgs-network
+
+  # ── Ollama — LLM local (fallback si Groq indisponible) ───────
+  # Modèle téléchargé automatiquement au premier démarrage (~4 Go)
+  # Interface : http://localhost:11434
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sgs-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    networks:
+      - sgs-network
+    # Télécharge mistral:7b automatiquement si absent
+    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5 && ollama pull mistral:7b && wait"]
 
   # ── Service 8 : IA/RAG (8008) ─────────────────────────────────
   # Deux bases de données :
@@ -198,20 +219,22 @@ services:
       - "8008:8008"
     env_file: .env
     environment:
-      IA_RAG_DATABASE_URL:     postgresql://postgres:admin@postgres:5432/sgs_ia_rag
-      AUTH_SERVICE_URL:        http://service-auth:8001
-      STOCK_SERVICE_URL:       http://service-stock:8003
-      MOUVEMENT_SERVICE_URL:   http://service-mouvement:8004
-      ALERTE_SERVICE_URL:      http://service-alertes:8005
+      IA_RAG_DATABASE_URL:      postgresql://postgres:admin@postgres:5432/sgs_ia_rag
+      AUTH_SERVICE_URL:         http://service-auth:8001
+      STOCK_SERVICE_URL:        http://service-stock:8003
+      MOUVEMENT_SERVICE_URL:    http://service-mouvement:8004
+      ALERTE_SERVICE_URL:       http://service-alertes:8005
       NOTIFICATION_SERVICE_URL: http://service-notification:8006
-      # Ollama tourne sur la machine hôte (pas containerisé car trop lourd)
-      OLLAMA_BASE_URL:         http://host.docker.internal:11434
+      GROQ_API_KEY:             ${GROQ_API_KEY}
+      OLLAMA_BASE_URL:          http://ollama:11434
     volumes:
       - chroma_data:/app/data/chroma
     depends_on:
       postgres:
         condition: service_healthy
       service-mouvement:
+        condition: service_started
+      ollama:
         condition: service_started
     networks:
       - sgs-network
@@ -285,5 +308,6 @@ networks:
 volumes:
   postgres_data:   # Données PostgreSQL persistantes
   chroma_data:     # Vecteurs ChromaDB persistants (Service IA/RAG)
+  ollama_models:   # Modèles LLM Ollama (mistral:7b ~4 Go)
   n8n_data:        # Workflows n8n persistants
   jenkins_home:    # Configuration et jobs Jenkins persistants

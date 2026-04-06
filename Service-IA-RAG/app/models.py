@@ -19,6 +19,7 @@ class TypeRecommandation(str, enum.Enum):
     TRANSFERT           = "transfert"
     ALERTE_STOCK        = "alerte_stock"
     OPTIMISATION        = "optimisation"
+    PROMOTION           = "promotion"
 
 
 class StatutRecommandation(str, enum.Enum):

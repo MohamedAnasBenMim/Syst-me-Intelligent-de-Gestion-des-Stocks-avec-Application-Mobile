@@ -44,6 +44,7 @@ class UtilisateurCreate(BaseModel):
     email:    str = Field(..., description="Email unique")
     password: str = Field(..., min_length=6)
     role:     RoleEnum = RoleEnum.operateur
+    salaire:  Optional[float] = Field(None, ge=0, description="Salaire mensuel en DT")
 
     @validator("email")
     def email_lowercase(cls, v: str) -> str:
@@ -63,6 +64,7 @@ class UtilisateurUpdate(BaseModel):
     email:     Optional[str]       = None
     role:      Optional[RoleEnum]  = None
     est_actif: Optional[bool]      = None
+    salaire:   Optional[float]     = Field(None, ge=0)
 
 
 class UtilisateurResponse(BaseModel):
@@ -72,12 +74,29 @@ class UtilisateurResponse(BaseModel):
     prenom:     str
     email:      str
     role:       str
+    salaire:    Optional[float]
     est_actif:  bool
     created_at: datetime
     updated_at: Optional[datetime]
 
     class Config:
         from_attributes = True
+
+
+class SalaireEmploye(BaseModel):
+    """Détail du salaire d'un employé."""
+    id:      int
+    nom:     str
+    prenom:  str
+    role:    str
+    salaire: float
+
+
+class SalairesStatsResponse(BaseModel):
+    """Résumé des salaires de tous les employés actifs."""
+    total_salaires : float
+    nb_employes    : int
+    detail         : list[SalaireEmploye]
 
 
 class ChangePasswordRequest(BaseModel):

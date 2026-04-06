@@ -1,0 +1,76 @@
+.prm-two-col {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 860px) {
+  .prm-two-col { grid-template-columns: 1fr; }
+}
+
+/* Profile card body */
+.prm-profile-body {
+  padding: 28px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+.prm-avatar {
+  width: 72px; height: 72px; border-radius: 50%;
+  background: var(--teal);
+  color: #fff; font-size: 22px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+}
+.prm-name  { font-size: 17px; font-weight: 700; color: #1E1B4B; }
+.prm-email { font-size: 13px; color: #6B7280; }
+.prm-role  { margin-top: 2px; }
+
+.prm-info-grid {
+  width: 100%;
+  margin-top: 12px;
+  border: 1px solid #E9ECEF;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.prm-info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+.prm-info-row + .prm-info-row { border-top: 1px solid #F4F4F5; }
+.prm-info-label { color: #6B7280; }
+.prm-info-val   { font-weight: 600; color: #1E1B4B; }
+
+.prm-note {
+  font-size: 12px; color: #ADB5BD;
+  line-height: 1.5; margin: 6px 0 0; text-align: center;
+}
+
+/* Password card body */
+.prm-pwd-body {
+  padding: 20px 24px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.prm-success {
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(40,167,69,0.08);
+  border: 1px solid rgba(40,167,69,0.3);
+  border-radius: 8px; padding: 10px 14px;
+  font-size: 13px; color: #28A745; font-weight: 600;
+}
+.prm-submit { width: 100%; justify-content: center; margin-top: 4px; }
+
+/* pwd-wrap reuse from common */
+.pwd-wrap { position: relative; display: flex; align-items: center; }
+.pwd-wrap input { flex: 1; padding-right: 38px; }
+.pwd-toggle {
+  position: absolute; right: 10px;
+  background: none; border: none; cursor: pointer;
+  color: #ADB5BD; display: flex; align-items: center;
+  transition: color 0.15s;
+}
+.pwd-toggle:hover { color: #1E1B4B; }
