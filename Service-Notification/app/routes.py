@@ -70,12 +70,14 @@ def generer_template_alerte(data: NotificationEnvoyer) -> tuple[str, str]:
     Génère le sujet et le contenu HTML de l'email d'alerte.
     Retourne (sujet, contenu_html).
     """
+    niveau_lower = (data.niveau or "").lower()
     icones = {
-        "rupture" : "🚨",
-        "critique": "⚠️",
-        "surstock": "📦",
+        "rupture"          : "🚨",
+        "critique"         : "⚠️",
+        "surstock"         : "📦",
+        "expiration_proche": "📅",
     }
-    icone = icones.get(data.niveau or "", "🔔")
+    icone = icones.get(niveau_lower, "🔔")
 
     sujet = f"{icone} Alerte Stock — {data.produit_nom or 'Produit'} — {data.niveau or 'alerte'}"
 
@@ -133,6 +135,147 @@ def generer_template_alerte(data: NotificationEnvoyer) -> tuple[str, str]:
     return sujet, contenu_html
 
 
+def generer_template_expiration(data: NotificationEnvoyer) -> tuple[str, str]:
+    """
+    Génère le sujet et le contenu HTML pour une alerte d'expiration proche.
+    Inclut la recommandation IA (promotion) directement dans l'email.
+    """
+    sujet = f"📅 Expiration proche — {data.produit_nom or 'Produit'} — Action requise"
+
+    contenu_html = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+
+        <div style="background-color: #0F1F3D; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h1 style="color: white; margin: 0;">SGS SaaS — Alerte Expiration</h1>
+        </div>
+
+        <div style="background-color: #f8f9fa; padding: 20px; border: 1px solid #dee2e6;">
+
+            <h2 style="color: #e67e22;">📅 Produit proche de sa date d'expiration</h2>
+
+            <table style="width: 100%; border-collapse: collapse;">
+                <tr style="border-bottom: 1px solid #dee2e6;">
+                    <td style="padding: 10px; font-weight: bold; width: 40%;">Produit</td>
+                    <td style="padding: 10px;">{data.produit_nom or data.produit_id or 'N/A'}</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #dee2e6;">
+                    <td style="padding: 10px; font-weight: bold;">Entrepôt</td>
+                    <td style="padding: 10px;">{data.entrepot_nom or data.entrepot_id or 'N/A'}</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #dee2e6;">
+                    <td style="padding: 10px; font-weight: bold;">Quantité en stock</td>
+                    <td style="padding: 10px; color: #e67e22; font-weight: bold;">
+                        {data.quantite or 0} unités
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px; font-weight: bold;">Détails</td>
+                    <td style="padding: 10px;">{data.message or "Vérifiez la date d'expiration"}</td>
+                </tr>
+            </table>
+
+            <div style="margin-top: 20px; padding: 15px;
+                        background-color: #fff3cd; border-radius: 4px;
+                        border-left: 4px solid #e67e22;">
+                <strong>🤖 Recommandation IA :</strong><br><br>
+                Ce produit arrive à expiration. Pour éviter les pertes, l'IA recommande
+                de <strong>lancer une promotion commerciale</strong> afin d'écouler le stock
+                avant la date limite. Actions possibles :
+                <ul style="margin-top: 8px;">
+                    <li>Appliquer une réduction tarifaire sur ce produit</li>
+                    <li>Proposer un lot promotionnel avec d'autres articles</li>
+                    <li>Alerter l'équipe commerciale pour accélérer les ventes</li>
+                    <li>Envisager un don à des associations si le stock ne peut être écoulé</li>
+                </ul>
+            </div>
+
+            <div style="margin-top: 15px; padding: 15px;
+                        background-color: #d4edda; border-radius: 4px;">
+                <strong>Action requise :</strong>
+                Connectez-vous à l'application SGS SaaS pour traiter cette alerte
+                et enregistrer l'action commerciale choisie.
+            </div>
+
+        </div>
+
+        <div style="background-color: #6c757d; padding: 10px;
+                    border-radius: 0 0 8px 8px; text-align: center;">
+            <p style="color: white; margin: 0; font-size: 12px;">
+                SGS SaaS — Système de Gestion de Stock
+            </p>
+        </div>
+
+    </body>
+    </html>
+    """
+    return sujet, contenu_html
+
+
+def generer_template_anomalie(data: NotificationEnvoyer) -> tuple[str, str]:
+    """
+    Génère le sujet et le contenu HTML pour une notification d'anomalie
+    envoyée à l'utilisateur qui a créé le mouvement suspect.
+    """
+    destinataire_nom = data.destinataire_nom or "Utilisateur"
+    sujet = f"⚠️ Anomalie détectée sur votre mouvement — {data.produit_nom or 'Produit'}"
+
+    contenu_html = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+
+        <div style="background-color: #0F1F3D; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h1 style="color: white; margin: 0;">SGS SaaS — Anomalie détectée</h1>
+        </div>
+
+        <div style="background-color: #f8f9fa; padding: 20px; border: 1px solid #dee2e6;">
+
+            <p>Bonjour <strong>{destinataire_nom}</strong>,</p>
+            <p>Une anomalie a été détectée sur un mouvement de stock que vous avez effectué.</p>
+
+            <h2 style="color: #e67e22;">⚠️ Détails de l'anomalie</h2>
+
+            <table style="width: 100%; border-collapse: collapse;">
+                <tr style="border-bottom: 1px solid #dee2e6;">
+                    <td style="padding: 10px; font-weight: bold; width: 40%;">Produit</td>
+                    <td style="padding: 10px;">{data.produit_nom or data.produit_id or 'N/A'}</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #dee2e6;">
+                    <td style="padding: 10px; font-weight: bold;">Entrepôt</td>
+                    <td style="padding: 10px;">{data.entrepot_nom or data.entrepot_id or 'N/A'}</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #dee2e6;">
+                    <td style="padding: 10px; font-weight: bold;">Quantité</td>
+                    <td style="padding: 10px;">{data.quantite or 0} unités</td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px; font-weight: bold;">Raison de l'anomalie</td>
+                    <td style="padding: 10px; color: #dc3545;">{data.message or 'Anomalie détectée'}</td>
+                </tr>
+            </table>
+
+            <div style="margin-top: 20px; padding: 15px;
+                        background-color: #fdecea; border-radius: 4px; border-left: 4px solid #dc3545;">
+                <strong>Action requise :</strong>
+                Veuillez vérifier ce mouvement et le corriger si nécessaire.
+                Si ce mouvement est intentionnel, contactez votre responsable.
+            </div>
+
+        </div>
+
+        <div style="background-color: #6c757d; padding: 10px;
+                    border-radius: 0 0 8px 8px; text-align: center;">
+            <p style="color: white; margin: 0; font-size: 12px;">
+                SGS SaaS — Système de Gestion de Stock
+            </p>
+        </div>
+
+    </body>
+    </html>
+    """
+    return sujet, contenu_html
+
+
 # ═══════════════════════════════════════════════════════════
 # ROUTES NOTIFICATION
 # ═══════════════════════════════════════════════════════════
@@ -150,8 +293,17 @@ async def envoyer_notification(
     db          : Session = Depends(get_db),
     current_user: dict    = Depends(get_current_user),
 ):
-    sujet, contenu_html = generer_template_alerte(data)
-    destinataire_email  = settings.SMTP_USER
+    # Choisir le bon template selon le type de notification
+    if data.niveau and data.niveau.upper() == "EXPIRATION_PROCHE":
+        sujet, contenu_html = generer_template_expiration(data)
+    elif data.destinataire_email:
+        # Email spécifique fourni → notification d'anomalie vers l'utilisateur concerné
+        sujet, contenu_html = generer_template_anomalie(data)
+    else:
+        sujet, contenu_html = generer_template_alerte(data)
+
+    # Utiliser l'email spécifique si fourni, sinon email par défaut (SMTP_USER)
+    destinataire_email = data.destinataire_email or settings.SMTP_USER
 
     notification = Notification(
         type_notification  = data.type,

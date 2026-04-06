@@ -1,7 +1,7 @@
 # app/schemas.py — service_reporting/
 
 from pydantic import BaseModel, Field
-from typing import Optional, List, Any
+from typing import Optional, List
 from datetime import datetime
 from app.models import TypeRapport, StatutRapport
 
@@ -101,6 +101,134 @@ class RapportResponse(BaseModel):
     donnees_json : Optional[str]
     genere_par   : Optional[int]
     created_at   : datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ── Profit & Perte ────────────────────────────────────────────
+class DepensesInput(BaseModel):
+    """
+    Formulaire de saisie des dépenses pour le calcul P&L.
+    - eau, electricite, autres : saisie manuelle obligatoire
+    - salaires        : None = auto-calculé depuis Service-Auth
+    - pertes_produits : None = auto-calculé depuis Service-Stock
+    """
+    eau              : float           = Field(default=0.0, ge=0, description="Facture d'eau (DT)")
+    electricite      : float           = Field(default=0.0, ge=0, description="Facture d'électricité (DT)")
+    autres           : float           = Field(default=0.0, ge=0, description="Autres dépenses (DT)")
+    salaires         : Optional[float] = Field(None, ge=0,
+        description="Salaires totaux (DT) — None = récupéré automatiquement depuis les employés")
+    pertes_produits  : Optional[float] = Field(None, ge=0,
+        description="Valeur des produits périmés (DT) — None = calculé automatiquement depuis le stock")
+
+
+class DetailDepenses(BaseModel):
+    """Détail ligne par ligne des dépenses."""
+    eau                  : float
+    electricite          : float
+    salaires             : float
+    pertes_produits      : float
+    autres               : float
+    total                : float
+    salaires_auto        : bool   # True = calculé automatiquement
+    pertes_produits_auto : bool   # True = calculé automatiquement
+
+
+class DetailStock(BaseModel):
+    """Détail du calcul de la valeur du stock."""
+    nb_produits_actifs   : int
+    nb_produits_exclus   : int    # périmés exclus du calcul
+    valeur_stock_normal  : float  # prix_unitaire × quantité
+    valeur_stock_promo   : float  # prix_promo × quantité (produits en promo)
+    valeur_totale        : float
+
+
+# ── Produits périmés ──────────────────────────────────────────
+class ProduitPerimeDetail(BaseModel):
+    """Un produit périmé avec sa valeur de perte."""
+    produit_id        : int
+    reference         : str
+    designation       : str
+    date_expiration   : str
+    quantite_restante : float
+    prix_unitaire     : float
+    valeur_perdue     : float
+    entrepot_id       : int
+
+
+class PerteCategorieDetail(BaseModel):
+    """Pertes regroupées par catégorie de produit."""
+    categorie       : str
+    produits        : List[ProduitPerimeDetail]
+    total_categorie : float
+
+
+class PertesProduitsResponse(BaseModel):
+    """Réponse complète des pertes sur produits périmés."""
+    date_calcul  : str
+    nb_produits  : int
+    total_global : float
+    categories   : List[PerteCategorieDetail]
+
+
+# ── Salaires ──────────────────────────────────────────────────
+class SalaireEmployeDetail(BaseModel):
+    """Détail du salaire d'un employé."""
+    id      : int
+    nom     : str
+    prenom  : str
+    role    : str
+    salaire : float
+
+
+class SalairesResponse(BaseModel):
+    """Résumé des salaires pour le P&L."""
+    total_salaires : float
+    nb_employes    : int
+    detail         : List[SalaireEmployeDetail]
+
+
+class AnalyseIA(BaseModel):
+    """Analyse générée par le LLM sur le P&L."""
+    depense_plus_elevee     : str
+    pourcentage_depense_max : float
+    recommandations         : List[str]
+    alerte_pertes_produits  : Optional[str] = None
+
+
+class ProfitPerteResponse(BaseModel):
+    """Réponse complète du calcul P&L."""
+    # Résumé
+    total_depenses  : float
+    valeur_stock    : float
+    profit          : float
+    statut          : str           # "benefice" | "perte" | "equilibre"
+
+    # Détails
+    detail_depenses : DetailDepenses
+    detail_stock    : DetailStock
+    pertes_produits : Optional[PertesProduitsResponse] = None   # détail périmés par catégorie
+    salaires_detail : Optional[SalairesResponse]       = None   # détail salaires employés
+
+    # Analyse IA
+    analyse_ia      : Optional[AnalyseIA] = None
+
+    # Métadonnées
+    calcule_le      : datetime
+    calcul_id       : Optional[int] = None   # ID en base pour historique
+
+    model_config = {"from_attributes": True}
+
+
+class ProfitPerteHistorique(BaseModel):
+    """Entrée de l'historique des calculs P&L."""
+    id               : int
+    total_depenses   : float
+    valeur_stock     : float
+    profit           : float
+    statut           : str
+    calcule_par_nom  : Optional[str]
+    calcule_le       : datetime
 
     model_config = {"from_attributes": True}
 

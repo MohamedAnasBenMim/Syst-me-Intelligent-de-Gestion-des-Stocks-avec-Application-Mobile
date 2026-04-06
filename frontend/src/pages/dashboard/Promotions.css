@@ -1,0 +1,246 @@
+/* ── Grille produits périmés ── */
+.perime-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+  padding: 18px 22px;
+}
+
+.perime-item-wrap { position: relative; }
+
+.perime-card {
+  background: #F9FAFB;
+  border: 1px solid #E5E7EB;
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: box-shadow 0.2s;
+}
+.perime-card:hover { box-shadow: 0 4px 16px rgba(99,102,241,0.1); }
+.perime-card--expire {
+  background: #FEF2F2;
+  border-color: #FECACA;
+}
+.perime-card--urgent {
+  background: #FFFBEB;
+  border-color: #FDE68A;
+}
+
+.perime-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.perime-nom {
+  font-size: 13px;
+  font-weight: 700;
+  color: #111827;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.perime-tag {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 20px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.perime-tag--expire { background: #EF4444; color: #fff; }
+.perime-tag--urgent { background: #F59E0B; color: #fff; }
+.perime-tag--warn   { background: #6366F1; color: #fff; }
+
+.perime-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+  color: #6B7280;
+}
+.perime-meta span { white-space: nowrap; }
+
+.btn-ia-reco {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #6366F1, #8B5CF6);
+  color: #fff;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: 'Inter', sans-serif;
+  transition: opacity 0.2s, box-shadow 0.2s;
+  margin-top: 4px;
+}
+.btn-ia-reco:hover {
+  opacity: 0.9;
+  box-shadow: 0 4px 14px rgba(99,102,241,0.35);
+}
+
+.ia-loading-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(255,255,255,0.85);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #6366F1;
+  font-weight: 500;
+  backdrop-filter: blur(2px);
+}
+
+/* ── Panneau recommandation IA ── */
+.ia-panel {
+  background: #fff;
+  border: 1.5px solid #C7D2FE;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(99,102,241,0.15);
+  animation: panelIn 0.25s ease;
+}
+@keyframes panelIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.ia-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 22px 14px;
+  border-bottom: 1px solid #EEF2FF;
+  background: #F9FAFB;
+}
+.ia-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.ia-reco-main {
+  text-align: center;
+  padding: 28px 20px 20px;
+  background: linear-gradient(135deg, #EEF2FF, #F5F3FF);
+}
+.ia-reco-pct {
+  font-size: 64px;
+  font-weight: 900;
+  color: #6366F1;
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+.ia-reco-label {
+  font-size: 14px;
+  color: #6B7280;
+  margin-top: 4px;
+}
+.ia-reco-prix {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 12px;
+  font-size: 16px;
+}
+.prix-barre {
+  text-decoration: line-through;
+  color: #9CA3AF;
+  font-weight: 500;
+}
+.prix-arrow { color: #9CA3AF; }
+.prix-promo {
+  font-weight: 800;
+  color: #22C55E;
+  font-size: 20px;
+}
+
+.ia-panel-motif {
+  padding: 16px 22px;
+  border-top: 1px solid #EEF2FF;
+}
+.ia-panel-motif-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6366F1;
+  margin-bottom: 8px;
+}
+.ia-panel-motif p {
+  font-size: 13px;
+  color: #374151;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.ia-panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 22px;
+  border-top: 1px solid #EEF2FF;
+  background: #FAFBFF;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.ia-panel-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.btn-appliquer {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 22px;
+  border-radius: 10px;
+  background: #22C55E;
+  color: #fff;
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: 'Inter', sans-serif;
+  transition: background 0.2s, box-shadow 0.2s;
+  white-space: nowrap;
+}
+.btn-appliquer:hover {
+  background: #16A34A;
+  box-shadow: 0 4px 14px rgba(34,197,94,0.35);
+}
+.btn-appliquer:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Badge réduction ── */
+.pct-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 800;
+  background: #EEF2FF;
+  color: #6366F1;
+}
+.pct-badge--inactive {
+  background: #F3F4F6;
+  color: #9CA3AF;
+}

@@ -34,11 +34,22 @@ security = HTTPBearer()
 async def generer_recommandation_ia(alerte: Alerte, token: str):
     """
     Appelle Service IA-RAG pour générer automatiquement une recommandation
-    lorsqu'une alerte critique ou rupture est déclenchée.
+    lorsqu'une alerte critique, rupture ou expiration proche est déclenchée.
     Ne bloque pas si le service IA-RAG ne répond pas.
     """
-    if alerte.niveau not in (NiveauAlerte.CRITIQUE, NiveauAlerte.RUPTURE):
+    if alerte.niveau not in (NiveauAlerte.CRITIQUE, NiveauAlerte.RUPTURE, NiveauAlerte.EXPIRATION_PROCHE):
         return
+
+    # Pour expiration proche : contexte spécifique "promotion"
+    if alerte.niveau == NiveauAlerte.EXPIRATION_PROCHE:
+        contexte = (
+            f"{alerte.message or ''} — "
+            "Le produit arrive à expiration. Recommander une action commerciale "
+            "(promotion, déstockage, don) pour écouler le stock avant la date limite."
+        )
+    else:
+        contexte = alerte.message
+
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             await client.post(
@@ -49,12 +60,31 @@ async def generer_recommandation_ia(alerte: Alerte, token: str):
                     "alerte_id":   alerte.id,
                     "stock_actuel": alerte.quantite_actuelle,
                     "seuil_min":   alerte.seuil_alerte_min,
-                    "contexte_supplementaire": alerte.message
+                    "contexte_supplementaire": contexte
                 },
                 headers={"Authorization": f"Bearer {token}"},
             )
     except Exception:
         pass  # IA-RAG indisponible → on continue sans bloquer
+
+
+async def get_user_email(user_id: int, token: str) -> tuple[str | None, str | None]:
+    """
+    Appelle Service Auth pour récupérer l'email et le nom d'un utilisateur par son ID.
+    Retourne (email, nom) ou (None, None) si indisponible.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(
+                f"{settings.AUTH_SERVICE_URL}/api/v1/auth/utilisateurs/{user_id}/email",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if r.status_code == 200:
+                data = r.json()
+                return data.get("email"), data.get("nom")
+    except Exception:
+        pass
+    return None, None
 
 
 async def notifier_responsables(alerte: Alerte, token: str):
@@ -148,9 +178,10 @@ async def declencher_alerte(
 
     # ── Générer le message selon le niveau ─────────────────
     messages = {
-        NiveauAlerte.RUPTURE : f"🚨 RUPTURE de stock — {data.produit_nom or data.produit_id} dans {data.entrepot_nom or data.entrepot_id} — quantité = 0",
-        NiveauAlerte.CRITIQUE: f"⚠️ Stock CRITIQUE — {data.produit_nom or data.produit_id} dans {data.entrepot_nom or data.entrepot_id} — quantité = {data.quantite_actuelle} (min: {data.seuil_alerte_min})",
-        NiveauAlerte.SURSTOCK: f"📦 SURSTOCK — {data.produit_nom or data.produit_id} dans {data.entrepot_nom or data.entrepot_id} — quantité = {data.quantite_actuelle} (max: {data.seuil_alerte_max})",
+        NiveauAlerte.RUPTURE          : f"🚨 RUPTURE de stock — {data.produit_nom or data.produit_id} dans {data.entrepot_nom or data.entrepot_id} — quantité = 0",
+        NiveauAlerte.CRITIQUE         : f"⚠️ Stock CRITIQUE — {data.produit_nom or data.produit_id} dans {data.entrepot_nom or data.entrepot_id} — quantité = {data.quantite_actuelle} (min: {data.seuil_alerte_min})",
+        NiveauAlerte.SURSTOCK         : f"📦 SURSTOCK — {data.produit_nom or data.produit_id} dans {data.entrepot_nom or data.entrepot_id} — quantité = {data.quantite_actuelle} (max: {data.seuil_alerte_max})",
+        NiveauAlerte.EXPIRATION_PROCHE: data.message or f"📅 EXPIRATION PROCHE — {data.produit_nom or data.produit_id} dans {data.entrepot_nom or data.entrepot_id} — Recommandation IA : envisager une promotion pour écouler le stock avant expiration",
     }
 
     # ── Créer la nouvelle alerte ───────────────────────────
@@ -181,6 +212,144 @@ async def declencher_alerte(
     await generer_recommandation_ia(nouvelle_alerte, token)
 
     return nouvelle_alerte
+
+
+@router.post(
+    "/alertes/verifier-expirations",
+    summary="Scanner tout le stock et déclencher les alertes d'expiration proche",
+    description="""
+    Parcourt tous les produits actifs en stock.
+    Pour chaque produit dont la date d'expiration est dans les **30 prochains jours**
+    et dont la quantité en stock est > 0, déclenche automatiquement une alerte
+    *expiration_proche* avec recommandation IA (promotion).
+
+    Peut être appelé manuellement ou planifié (cron / n8n).
+    """
+)
+async def verifier_expirations_stock(
+    seuil_jours : int                          = Query(30, ge=1, le=365, description="Nombre de jours avant expiration pour déclencher l'alerte"),
+    db          : Session                      = Depends(get_db),
+    current_user: dict                         = Depends(get_current_gestionnaire_or_admin),
+    credentials : HTTPAuthorizationCredentials = Depends(security),
+):
+    token = credentials.credentials
+    alertes_declenchees = 0
+    produits_analyses   = 0
+    erreurs             = []
+
+    # ── 1. Récupérer tous les produits actifs depuis Service Stock ──
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/produits?limit=500",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            produits = r.json() if r.status_code == 200 else []
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Impossible de contacter Service Stock : {e}",
+            "alertes_declenchees": 0,
+            "produits_analyses": 0,
+        }
+
+    today = datetime.now().date()
+
+    for produit in produits:
+        date_exp_str = produit.get("date_expiration")
+        if not date_exp_str:
+            continue  # produit sans date d'expiration → on ignore
+
+        try:
+            date_exp = datetime.strptime(date_exp_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+
+        jours_restants = (date_exp - today).days
+        if jours_restants <= 0 or jours_restants > seuil_jours:
+            continue  # déjà expiré ou loin de l'échéance
+
+        produits_analyses += 1
+        produit_id  = produit.get("id")
+        produit_nom = produit.get("designation", f"Produit {produit_id}")
+
+        # ── 2. Récupérer les stocks de ce produit dans tous les entrepôts ──
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                rs = await client.get(
+                    f"{settings.STOCK_SERVICE_URL}/api/v1/stocks/produit/{produit_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                stocks = rs.json() if rs.status_code == 200 else []
+        except Exception:
+            stocks = []
+
+        for stock in stocks:
+            quantite = float(stock.get("quantite") or 0)
+            if quantite <= 0:
+                continue  # pas de stock → pas d'alerte
+
+            entrepot_id  = stock.get("entrepot_id", 0)
+            entrepot_nom = f"Entrepôt {entrepot_id}"
+
+            # ── Récupérer le nom de l'entrepôt ──
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    rw = await client.get(
+                        f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/entrepots/{entrepot_id}",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    if rw.status_code == 200:
+                        entrepot_nom = rw.json().get("nom", entrepot_nom)
+            except Exception:
+                pass
+
+            # ── Vérifier qu'une alerte identique n'est pas déjà active ──
+            alerte_existante = db.query(Alerte).filter(
+                Alerte.produit_id  == produit_id,
+                Alerte.entrepot_id == entrepot_id,
+                Alerte.niveau      == NiveauAlerte.EXPIRATION_PROCHE,
+                Alerte.statut      == StatutAlerte.ACTIVE,
+            ).first()
+            if alerte_existante:
+                continue  # déjà alerté pour ce produit+entrepôt
+
+            # ── 3. Créer l'alerte et notifier ──
+            message = (
+                f"📅 EXPIRATION PROCHE — {produit_nom} dans {entrepot_nom} — "
+                f"Date d'expiration : {date_exp_str} (dans {jours_restants} jour(s)) — "
+                f"Quantité en stock : {quantite} — "
+                f"Recommandation IA : envisager une promotion pour écouler le stock avant expiration."
+            )
+            nouvelle_alerte = Alerte(
+                niveau              = NiveauAlerte.EXPIRATION_PROCHE,
+                statut              = StatutAlerte.ACTIVE,
+                produit_id          = produit_id,
+                produit_nom         = produit_nom,
+                entrepot_id         = entrepot_id,
+                entrepot_nom        = entrepot_nom,
+                quantite_actuelle   = quantite,
+                message             = message,
+                notification_envoyee= False,
+            )
+            db.add(nouvelle_alerte)
+            db.commit()
+            db.refresh(nouvelle_alerte)
+
+            await notifier_responsables(nouvelle_alerte, token)
+            nouvelle_alerte.notification_envoyee = True
+            db.commit()
+
+            await generer_recommandation_ia(nouvelle_alerte, token)
+            alertes_declenchees += 1
+
+    return {
+        "success":            True,
+        "message":            f"Scan terminé — {produits_analyses} produit(s) analysé(s)",
+        "seuil_jours":        seuil_jours,
+        "produits_analyses":  produits_analyses,
+        "alertes_declenchees": alertes_declenchees,
+    }
 
 
 @router.get(
@@ -318,78 +487,170 @@ async def detecter_anomalies(
             "anomalies": []
         }
 
-    # ── Construire la matrice de features ──────────────────
-    # Features : [quantite, type_encoded, produit_id, entrepot_id]
-    features, meta = [], []
-    type_map = {"entree": 0, "sortie": 1, "transfert": 2}
+    anomalies_detectees    = []
+    alertes_creees         = 0
+    notifications_a_envoyer = []  # Liste des (email, nom, mouvement, raison) à notifier
 
-    for m in mouvements:
-        quantite    = float(m.get("quantite") or 0)
-        type_mvt    = type_map.get(m.get("type_mouvement", ""), 0)
-        produit_id  = float(m.get("produit_id") or 0)
-        entrepot_id = float(m.get("entrepot_source_id") or m.get("entrepot_dest_id") or 0)
-
-        features.append([quantite, type_mvt, produit_id, entrepot_id])
-        meta.append({
-            "id":           m.get("id"),
-            "produit_id":   m.get("produit_id"),
-            "produit_nom":  m.get("produit_nom", f"Produit {m.get('produit_id')}"),
-            "quantite":     quantite,
-            "type":         m.get("type_mouvement"),
-            "created_at":   m.get("created_at", "")
-        })
-
-    X = np.array(features)
-
-    # ── Entraîner Isolation Forest ─────────────────────────
-    # contamination=0.1 → 10% des données considérées comme anomalies
-    model = IsolationForest(contamination=0.1, random_state=42, n_estimators=100)
-    predictions = model.fit_predict(X)   # -1 = anomalie, 1 = normal
-    scores      = model.score_samples(X) # score négatif = plus anormal
-
-    # ── Collecter les anomalies ────────────────────────────
-    anomalies_detectees = []
-    alertes_creees      = 0
-
-    for i, pred in enumerate(predictions):
-        if pred == -1:
-            m_meta = meta[i]
-            score  = round(float(scores[i]), 4)
-
-            anomalie = {
-                "mouvement_id": m_meta["id"],
-                "produit_id":   m_meta["produit_id"],
-                "produit_nom":  m_meta["produit_nom"],
-                "quantite":     m_meta["quantite"],
-                "type":         m_meta["type"],
-                "date":         m_meta["created_at"][:10] if m_meta["created_at"] else "",
-                "score_anomalie": score,
-                "raison": f"Quantité {m_meta['quantite']} inhabituellement {'élevée' if m_meta['quantite'] > np.mean(X[:,0]) else 'basse'} pour un mouvement de type {m_meta['type']}"
-            }
-            anomalies_detectees.append(anomalie)
-
-            # Créer une alerte en base pour chaque anomalie
-            nouvelle_alerte = Alerte(
+    def creer_alerte(m, type_anomalie, raison):
+        nonlocal alertes_creees
+        # Éviter de créer un doublon d'alerte pour le même mouvement
+        existante = db.query(Alerte).filter(
+            Alerte.produit_id == (m.get("produit_id") or 0),
+            Alerte.message.contains(f"mouvement #{m.get('id')}"),
+            Alerte.statut == StatutAlerte.ACTIVE
+        ).first()
+        if not existante:
+            db.add(Alerte(
                 niveau            = NiveauAlerte.CRITIQUE,
                 statut            = StatutAlerte.ACTIVE,
-                produit_id        = m_meta["produit_id"] or 0,
-                produit_nom       = m_meta["produit_nom"],
-                entrepot_id       = 0,
-                quantite_actuelle = m_meta["quantite"],
-                message           = f"🤖 ANOMALIE IA — {anomalie['raison']} (score: {score})"
-            )
-            db.add(nouvelle_alerte)
+                produit_id        = m.get("produit_id") or 0,
+                produit_nom       = m.get("produit_nom", ""),
+                entrepot_id       = m.get("entrepot_source_id") or m.get("entrepot_dest_id") or 0,
+                quantite_actuelle = float(m.get("quantite") or 0),
+                message           = f"ANOMALIE [{type_anomalie}] mouvement #{m.get('id')} — {raison}"
+            ))
             alertes_creees += 1
+            # Enregistrer pour notification email à l'utilisateur concerné
+            utilisateur_id = m.get("utilisateur_id")
+            if utilisateur_id:
+                notifications_a_envoyer.append({
+                    "utilisateur_id": utilisateur_id,
+                    "utilisateur_nom": m.get("utilisateur_nom", ""),
+                    "produit_id":  m.get("produit_id"),
+                    "produit_nom": m.get("produit_nom", ""),
+                    "entrepot_id": m.get("entrepot_source_id") or m.get("entrepot_dest_id"),
+                    "entrepot_nom": m.get("entrepot_source_nom") or m.get("entrepot_dest_nom", ""),
+                    "quantite":    float(m.get("quantite") or 0),
+                    "raison":      raison,
+                })
+
+    # ════════════════════════════════════════════════════
+    # ANOMALIE 1 — Quantité = 0
+    # ════════════════════════════════════════════════════
+    for m in mouvements:
+        if float(m.get("quantite") or 0) == 0:
+            raison = "Mouvement enregistré avec une quantité de 0 — saisie invalide"
+            anomalies_detectees.append({
+                "mouvement_id":  m.get("id"),
+                "produit_id":    m.get("produit_id"),
+                "produit_nom":   m.get("produit_nom"),
+                "quantite":      0,
+                "type":          m.get("type_mouvement"),
+                "date":          (m.get("created_at") or "")[:10],
+                "type_anomalie": "quantite_zero",
+                "raison":        raison
+            })
+            creer_alerte(m, "quantite_zero", raison)
+
+    # ════════════════════════════════════════════════════
+    # ANOMALIE 2 — Stock négatif après sortie
+    # ════════════════════════════════════════════════════
+    for m in mouvements:
+        if m.get("type_mouvement") != "sortie":
+            continue
+        stock_apres = m.get("stock_apres")
+        if stock_apres is not None and float(stock_apres) < 0:
+            raison = (
+                f"Sortie de {m.get('quantite')} unités a rendu le stock négatif "
+                f"({stock_apres} unités) — impossible physiquement"
+            )
+            anomalies_detectees.append({
+                "mouvement_id":  m.get("id"),
+                "produit_id":    m.get("produit_id"),
+                "produit_nom":   m.get("produit_nom"),
+                "quantite":      float(m.get("quantite") or 0),
+                "type":          "sortie",
+                "date":          (m.get("created_at") or "")[:10],
+                "type_anomalie": "stock_negatif",
+                "raison":        raison
+            })
+            creer_alerte(m, "stock_negatif", raison)
+
+    # ════════════════════════════════════════════════════
+    # ANOMALIE 3 — Doublon exact (même seconde)
+    # ════════════════════════════════════════════════════
+    # Détection doublon dans une fenêtre de 60 secondes
+    mvts_tries = sorted(mouvements, key=lambda x: x.get("created_at", ""))
+    for idx, m in enumerate(mvts_tries):
+        try:
+            dt_m = datetime.fromisoformat((m.get("created_at") or "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        for m2 in mvts_tries[idx + 1:]:
+            try:
+                dt_m2 = datetime.fromisoformat((m2.get("created_at") or "").replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if (dt_m2 - dt_m).total_seconds() > 60:
+                break
+            if (
+                m.get("produit_id")     == m2.get("produit_id") and
+                m.get("quantite")       == m2.get("quantite") and
+                m.get("type_mouvement") == m2.get("type_mouvement") and
+                (m.get("entrepot_source_id") or m.get("entrepot_dest_id")) ==
+                (m2.get("entrepot_source_id") or m2.get("entrepot_dest_id"))
+            ):
+                diff  = int((dt_m2 - dt_m).total_seconds())
+                raison = (
+                    f"Doublon probable — même mouvement ({m.get('type_mouvement')}, "
+                    f"{m.get('quantite')} unités, produit {m.get('produit_id')}) "
+                    f"répété {diff} secondes après (IDs: {m.get('id')} et {m2.get('id')})"
+                )
+                anomalies_detectees.append({
+                    "mouvement_id":  m2.get("id"),
+                    "produit_id":    m2.get("produit_id"),
+                    "produit_nom":   m2.get("produit_nom"),
+                    "quantite":      float(m2.get("quantite") or 0),
+                    "type":          m2.get("type_mouvement"),
+                    "date":          (m2.get("created_at") or "")[:10],
+                    "type_anomalie": "doublon",
+                    "raison":        raison
+                })
+                creer_alerte(m2, "doublon", raison)
 
     db.commit()
 
+    # ── Envoyer notifications email aux utilisateurs concernés ──
+    # utilisateur_nom dans les mouvements contient l'email (stocké depuis le JWT)
+    notifications_envoyees = 0
+    for notif in notifications_a_envoyer:
+        # L'email est stocké dans utilisateur_nom du mouvement
+        user_email = notif.get("utilisateur_nom")
+        if not user_email or "@" not in user_email:
+            # Fallback : appel Auth si utilisateur_nom n'est pas un email
+            user_email, _ = await get_user_email(notif["utilisateur_id"], token)
+        if not user_email:
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(
+                    f"{settings.NOTIFICATION_SERVICE_URL}/api/v1/notifications/envoyer",
+                    json={
+                        "type":               "alerte_stock",
+                        "niveau":             "critique",
+                        "produit_id":         notif["produit_id"],
+                        "produit_nom":        notif["produit_nom"],
+                        "entrepot_id":        notif["entrepot_id"],
+                        "entrepot_nom":       notif["entrepot_nom"],
+                        "quantite":           notif["quantite"],
+                        "message":            notif["raison"],
+                        "destinataire_email": user_email,
+                        "destinataire_nom":   notif.get("utilisateur_nom", ""),
+                    },
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            notifications_envoyees += 1
+        except Exception:
+            pass
+
     return {
-        "success":           True,
-        "message":           f"Analyse terminée — {len(mouvements)} mouvements analysés",
-        "total_mouvements":  len(mouvements),
-        "anomalies_count":   len(anomalies_detectees),
-        "alertes_creees":    alertes_creees,
-        "anomalies":         anomalies_detectees
+        "success":                  True,
+        "message":                  f"Analyse terminée — {len(mouvements)} mouvements analysés",
+        "total_mouvements":         len(mouvements),
+        "anomalies_count":          len(anomalies_detectees),
+        "alertes_creees":           alertes_creees,
+        "notifications_envoyees":   notifications_envoyees,
+        "anomalies":                anomalies_detectees
     }
 
 

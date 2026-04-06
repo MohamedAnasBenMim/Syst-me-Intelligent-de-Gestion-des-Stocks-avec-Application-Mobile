@@ -30,12 +30,11 @@ security = HTTPBearer()
 # FONCTION UTILITAIRE — Calculer capacite_utilisee
 # ═══════════════════════════════════════════════════════════
 
-async def calculer_capacite_utilisee(entrepot_id: int, token: str) -> float:
+async def recuperer_stocks_entrepot(entrepot_id: int, token: str) -> list:
     """
     Appelle Service Stock GET /stocks/entrepot/{id}
-    et somme toutes les quantités pour calculer
-    la capacité utilisée en temps réel.
-    Retourne 0.0 si Service Stock ne répond pas.
+    et retourne la liste complète des stocks avec produits.
+    Retourne [] si Service Stock ne répond pas.
     """
     try:
         async with httpx.AsyncClient() as client:
@@ -45,11 +44,21 @@ async def calculer_capacite_utilisee(entrepot_id: int, token: str) -> float:
                 timeout=5.0
             )
         if response.status_code == 200:
-            stocks = response.json()
-            return sum(s["quantite"] for s in stocks)
+            return response.json()
     except Exception:
         pass
-    return 0.0
+    return []
+
+
+async def calculer_capacite_utilisee(entrepot_id: int, token: str) -> float:
+    """
+    Appelle Service Stock GET /stocks/entrepot/{id}
+    et somme toutes les quantités pour calculer
+    la capacité utilisée en temps réel.
+    Retourne 0.0 si Service Stock ne répond pas.
+    """
+    stocks = await recuperer_stocks_entrepot(entrepot_id, token)
+    return sum(s["quantite"] for s in stocks)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -102,6 +111,12 @@ def creer_entrepot(
 
     db.commit()
     db.refresh(nouvel_entrepot)
+
+    # Charger les zones créées (pas de relationship SQLAlchemy défini)
+    nouvel_entrepot.zones  = db.query(Zone).filter(Zone.entrepot_id == nouvel_entrepot.id).all()
+    nouvel_entrepot.stocks = []
+    nouvel_entrepot.capacite_utilisee = 0.0
+    nouvel_entrepot.taux_occupation   = 0.0
     return nouvel_entrepot
 
 
@@ -127,12 +142,14 @@ async def lister_entrepots(
         .all()
     )
 
-    # Charger les zones et calculer capacite_utilisee pour chaque entrepôt
+    # Charger les zones, stocks et calculer capacite_utilisee pour chaque entrepôt
     for entrepot in entrepots:
-        entrepot.zones = db.query(Zone).filter(Zone.entrepot_id == entrepot.id).all()
-        entrepot.capacite_utilisee = await calculer_capacite_utilisee(
-            entrepot.id, token
-        )
+        entrepot.zones  = db.query(Zone).filter(Zone.entrepot_id == entrepot.id).all()
+        stocks_data     = await recuperer_stocks_entrepot(entrepot.id, token)
+        entrepot.stocks = stocks_data
+        entrepot.capacite_utilisee = sum(s["quantite"] for s in stocks_data)
+        cap_max = entrepot.capacite_max or 0
+        entrepot.taux_occupation = round((entrepot.capacite_utilisee / cap_max) * 100, 2) if cap_max > 0 else 0.0
 
     return EntrepotList(
         total     = total,
@@ -166,10 +183,12 @@ async def get_entrepot(
     # Charger les zones de cet entrepôt
     entrepot.zones = db.query(Zone).filter(Zone.entrepot_id == entrepot_id).all()
 
-    # Calculer capacite_utilisee en temps réel
-    entrepot.capacite_utilisee = await calculer_capacite_utilisee(
-        entrepot_id, token
-    )
+    # Charger les stocks, calculer capacite_utilisee et taux_occupation en temps réel
+    stocks_data                = await recuperer_stocks_entrepot(entrepot_id, token)
+    entrepot.stocks            = stocks_data
+    entrepot.capacite_utilisee = sum(s["quantite"] for s in stocks_data)
+    cap_max = entrepot.capacite_max or 0
+    entrepot.taux_occupation = round((entrepot.capacite_utilisee / cap_max) * 100, 2) if cap_max > 0 else 0.0
 
     return entrepot
 

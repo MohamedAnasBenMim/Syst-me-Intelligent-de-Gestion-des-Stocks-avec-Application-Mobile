@@ -1,0 +1,20 @@
+/* App-level overrides — global styles are in index.css */
+
+.landing-main {
+  position: relative;
+  background:
+    radial-gradient(ellipse 70vw 60vh at 0%    0%,  #F4CFDF 0%, transparent 60%),
+    radial-gradient(ellipse 75vw 60vh at 100%  0%,  #e0e9f1 0%, transparent 60%),
+    radial-gradient(ellipse 70vw 55vh at 50%  22%,  #F7F6CF 0%, transparent 60%),
+    radial-gradient(ellipse 65vw 55vh at 0%   48%,  #b9e1ff 0%, transparent 60%),
+    radial-gradient(ellipse 70vw 55vh at 100% 52%,  #F4CFDF 0%, transparent 60%),
+    radial-gradient(ellipse 65vw 55vh at 10%  72%,  #F7F6CF 0%, transparent 60%),
+    radial-gradient(ellipse 70vw 55vh at 100% 78%,  #B6D8F2 0%, transparent 60%),
+    radial-gradient(ellipse 60vw 50vh at 50%  96%,  #F4CFDF 0%, transparent 60%),
+    #ffffff;
+  background-attachment: fixed;
+}
+
+@media (max-width: 768px) {
+  .landing-main { background-attachment: scroll; }
+}

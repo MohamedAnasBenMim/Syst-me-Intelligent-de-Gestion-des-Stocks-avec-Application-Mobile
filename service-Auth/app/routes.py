@@ -61,6 +61,8 @@ async def login(
     # Créer le token JWT
     token = create_access_token({
         "user_id": utilisateur.id,
+        "email":   utilisateur.email,
+        "nom":     utilisateur.nom,
         "role":    utilisateur.role,
     })
 
@@ -129,6 +131,54 @@ async def get_me(
 
 
 # ══════════════════════════════════════════════════════════
+# ENDPOINT PUBLIC — INSCRIPTION
+# ══════════════════════════════════════════════════════════
+
+@router.post(
+    "/auth/register",
+    response_model=schemas.UtilisateurResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Authentification"],
+    summary="Inscription publique",
+)
+async def register(
+    data: schemas.UtilisateurCreate,
+    db:   Session = Depends(get_db),
+):
+    """
+    Créer un compte utilisateur sans authentification.
+    Le rôle admin est interdit à l'inscription publique.
+    """
+    if data.role == "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Impossible de créer un compte admin via l'inscription publique",
+        )
+
+    existant = db.query(models.Utilisateur).filter(
+        models.Utilisateur.email == data.email.lower()
+    ).first()
+    if existant:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"L'email '{data.email}' est déjà utilisé",
+        )
+
+    utilisateur = models.Utilisateur(
+        nom      = data.nom,
+        prenom   = data.prenom,
+        email    = data.email.lower(),
+        password = hash_password(data.password),
+        role     = data.role,
+        salaire  = data.salaire,
+    )
+    db.add(utilisateur)
+    db.commit()
+    db.refresh(utilisateur)
+    return utilisateur
+
+
+# ══════════════════════════════════════════════════════════
 # ENDPOINTS — UTILISATEURS
 # ══════════════════════════════════════════════════════════
 
@@ -163,6 +213,7 @@ async def create_utilisateur(
         email    = data.email,
         password = hash_password(data.password),
         role     = data.role,
+        salaire  = data.salaire,
     )
     db.add(utilisateur)
     db.commit()
@@ -189,6 +240,46 @@ async def list_utilisateurs(
 
 
 @router.get(
+    "/utilisateurs/salaires",
+    response_model=schemas.SalairesStatsResponse,
+    tags=["Utilisateurs"],
+    summary="Total des salaires des employés",
+    description="Calcule le total des salaires de tous les employés actifs (gestionnaires + opérateurs). Réservé à Admin.",
+)
+async def get_salaires_stats(
+    db:    Session = Depends(get_db),
+    _user: dict    = Depends(only_admin),
+):
+    """
+    Retourne le total des salaires et le détail par employé.
+    Utilisé par Service-Reporting pour le calcul P&L.
+    """
+    employes = db.query(models.Utilisateur).filter(
+        models.Utilisateur.est_actif == True,
+        models.Utilisateur.salaire   != None,
+        models.Utilisateur.salaire   > 0,
+    ).all()
+
+    detail = [
+        schemas.SalaireEmploye(
+            id      = e.id,
+            nom     = e.nom,
+            prenom  = e.prenom,
+            role    = e.role,
+            salaire = e.salaire,
+        )
+        for e in employes
+    ]
+    total = round(sum(e.salaire for e in employes), 2)
+
+    return schemas.SalairesStatsResponse(
+        total_salaires = total,
+        nb_employes    = len(employes),
+        detail         = detail,
+    )
+
+
+@router.get(
     "/utilisateurs/{user_id}",
     response_model=schemas.UtilisateurResponse,
     tags=["Utilisateurs"],
@@ -212,6 +303,26 @@ async def get_utilisateur(
             detail=f"Utilisateur {user_id} introuvable",
         )
     return utilisateur
+
+
+@router.get(
+    "/utilisateurs/{user_id}/email",
+    include_in_schema=False,  # Endpoint interne — appelé par Service-Alertes
+    tags=["Utilisateurs"],
+)
+async def get_utilisateur_email(
+    user_id: int,
+    db:      Session = Depends(get_db),
+    _user:   dict    = Depends(get_current_user),
+):
+    """Retourne uniquement l'email d'un utilisateur. Accessible à tous les rôles (usage interne)."""
+    utilisateur = db.query(models.Utilisateur).filter(
+        models.Utilisateur.id       == user_id,
+        models.Utilisateur.est_actif == True,
+    ).first()
+    if not utilisateur:
+        return {"email": None, "nom": None}
+    return {"email": utilisateur.email, "nom": utilisateur.nom}
 
 
 @router.put(

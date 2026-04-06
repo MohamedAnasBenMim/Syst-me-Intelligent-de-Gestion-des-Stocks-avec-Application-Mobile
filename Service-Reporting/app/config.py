@@ -24,6 +24,7 @@ class ReportingSettings(BaseSettings):
     STOCK_SERVICE_URL:     str = "http://localhost:8003"
     MOUVEMENT_SERVICE_URL: str = "http://localhost:8004"
     ALERTE_SERVICE_URL:    str = "http://localhost:8005"
+    IA_RAG_SERVICE_URL:    str = "http://localhost:8008"
 
     @field_validator("REPORTING_DATABASE_URL")
     @classmethod

@@ -3,7 +3,7 @@
 
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, date
 from enum import Enum
 
 
@@ -23,13 +23,16 @@ class NiveauAlerte(str, Enum):
 # ══════════════════════════════════════════════════════════
 
 class ProduitCreate(BaseModel):
-    reference:        str            = Field(..., min_length=2, max_length=50)
+    reference:        Optional[str]  = Field(None, min_length=2, max_length=50,
+                                            description="Générée automatiquement si non fournie")
     designation:      str            = Field(..., min_length=2, max_length=200)
     categorie:        Optional[str]  = None
     unite_mesure:     str            = "unite"
     prix_unitaire:    float          = Field(default=0.0, ge=0)
     seuil_alerte_min: float          = Field(default=10.0,   ge=0)
     seuil_alerte_max: float          = Field(default=1000.0, ge=0)
+    date_fabrication: Optional[date] = Field(None, description="Date de fabrication du produit")
+    date_expiration:  Optional[date] = Field(None, description="Date d'expiration du produit")
 
     @field_validator("seuil_alerte_max")
     @classmethod
@@ -42,8 +45,10 @@ class ProduitCreate(BaseModel):
     @field_validator("reference")
     @classmethod
     def reference_uppercase(cls, v):
-        # Nettoie et met en majuscules la référence
-        return v.upper().strip()
+        # Nettoie et met en majuscules la référence (si fournie)
+        if v is not None:
+            return v.upper().strip()
+        return v
 
 
 class ProduitUpdate(BaseModel):
@@ -53,6 +58,8 @@ class ProduitUpdate(BaseModel):
     prix_unitaire:    Optional[float] = Field(None, ge=0)
     seuil_alerte_min: Optional[float] = Field(None, ge=0)
     seuil_alerte_max: Optional[float] = Field(None, ge=0)
+    date_fabrication: Optional[date]  = None
+    date_expiration:  Optional[date]  = None
     est_actif:        Optional[bool]  = None
 
 
@@ -65,6 +72,10 @@ class ProduitResponse(BaseModel):
     prix_unitaire:    float
     seuil_alerte_min: float
     seuil_alerte_max: float
+    date_fabrication: Optional[date]     = None
+    date_expiration:  Optional[date]     = None
+    en_promotion:     bool               = False
+    prix_promo:       Optional[float]    = None
     est_actif:        bool
     created_at:       datetime
     updated_at:       Optional[datetime]
@@ -142,6 +153,76 @@ class StockOperationResponse(BaseModel):
     message        : str
 
     model_config = {"from_attributes": True}
+
+
+# ══════════════════════════════════════════════════════════
+# SCHEMAS GÉNÉRIQUES
+# ══════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════
+# SCHEMAS PROMOTION
+# ══════════════════════════════════════════════════════════
+
+class PromotionCreate(BaseModel):
+    produit_id:           int            = Field(..., gt=0)
+    pourcentage_reduction: float         = Field(..., gt=0, le=100,
+                                                 description="Pourcentage de réduction (1-100)")
+    date_debut:           date           = Field(default_factory=date.today)
+    date_fin:             Optional[date] = Field(None, description="Laisser vide = pas de date limite")
+    motif:                Optional[str]  = Field(None, max_length=300,
+                                                 description="Ex: Expiration proche, Liquidation saisonnière")
+    recommandation_ia_id: Optional[int]  = Field(None,
+                                                 description="ID recommandation IA si appliquée depuis l'IA")
+
+    @field_validator("date_fin")
+    @classmethod
+    def fin_apres_debut(cls, v, info):
+        if v and "date_debut" in info.data and v < info.data["date_debut"]:
+            raise ValueError("date_fin doit être postérieure à date_debut")
+        return v
+
+
+class PromotionUpdate(BaseModel):
+    pourcentage_reduction: Optional[float] = Field(None, gt=0, le=100)
+    date_fin:              Optional[date]  = None
+    motif:                 Optional[str]   = Field(None, max_length=300)
+    est_active:            Optional[bool]  = None
+
+
+class PromotionResponse(BaseModel):
+    id:                   int
+    produit_id:           int
+    produit_nom:          Optional[str]    = None
+    produit_reference:    Optional[str]    = None
+    pourcentage_reduction: float
+    prix_initial:         float
+    prix_promo:           float
+    motif:                Optional[str]    = None
+    date_debut:           date
+    date_fin:             Optional[date]   = None
+    recommandation_ia_id: Optional[int]   = None
+    creee_par_id:         Optional[int]   = None
+    creee_par_nom:        Optional[str]   = None
+    est_active:           bool
+    created_at:           datetime
+    updated_at:           Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class PromotionList(BaseModel):
+    total:      int
+    page:       int
+    per_page:   int
+    promotions: List[PromotionResponse]
+
+
+class AppliquerIARequest(BaseModel):
+    recommandation_ia_id: int   = Field(..., gt=0,
+                                        description="ID de la recommandation IA à appliquer")
+    pourcentage_reduction: float = Field(..., gt=0, le=100,
+                                         description="Pourcentage proposé par l'IA")
+    date_fin:             Optional[date] = None
 
 
 # ══════════════════════════════════════════════════════════

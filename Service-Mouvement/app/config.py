@@ -30,6 +30,7 @@ class MouvementSettings(BaseSettings):
     WAREHOUSE_SERVICE_URL: str = "http://localhost:8002"
     STOCK_SERVICE_URL:     str = "http://localhost:8003"
     IA_RAG_SERVICE_URL:    str = "http://localhost:8008"
+    ALERTES_SERVICE_URL:   str = "http://localhost:8005"
 
     # ── Validation ────────────────────────────────────────
     @field_validator("MOUVEMENT_DATABASE_URL")

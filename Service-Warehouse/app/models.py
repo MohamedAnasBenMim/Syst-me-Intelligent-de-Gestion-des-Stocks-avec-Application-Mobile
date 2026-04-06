@@ -22,6 +22,7 @@ class Entrepot(Base):
     ville        = Column(String(100), nullable=True)
     capacite_max = Column(Float,       nullable=False, default=1000.0)
     capacite_utilisee = Column(Float,  nullable=False, default=0.0)
+    taux_occupation: float = 0.0  # calculé dynamiquement, non stocké en DB
     responsable  = Column(String(200), nullable=True)
     telephone    = Column(String(50),  nullable=True)
     est_actif    = Column(Boolean,     default=True, nullable=False)

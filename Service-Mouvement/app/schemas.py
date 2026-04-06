@@ -1,7 +1,7 @@
 # app/schemas.py — service_mouvement/
 
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from app.models import TypeMouvement, StatutMouvement
 
@@ -26,7 +26,9 @@ class MouvementBase(BaseModel):
 
     # Zones (optionnel — granularité fine)
     zone_source_id      : Optional[int] = Field(None, gt=0)
+    zone_source_nom     : Optional[str] = Field(None, max_length=200)
     zone_dest_id        : Optional[int] = Field(None, gt=0)
+    zone_dest_nom       : Optional[str] = Field(None, max_length=200)
 
     # Informations complémentaires
     reference           : Optional[str] = Field(None, max_length=100, description="Référence bon de livraison / commande")
@@ -129,13 +131,16 @@ class MouvementResponse(MouvementBase):
     """
     Schema retourné au client après création ou consultation.
     Inclut les champs générés par la BDD (id, statut, timestamps).
+    avertissements : liste de messages d'alerte à afficher immédiatement
+                     sur le dashboard (ex: produit bientôt périmé).
     """
     id              : int
     statut          : StatutMouvement
     utilisateur_id  : int
-    utilisateur_nom : Optional[str] = None
+    utilisateur_nom : Optional[str]       = None
     created_at      : datetime
-    updated_at      : Optional[datetime] = None
+    updated_at      : Optional[datetime]  = None
+    avertissements  : Optional[List[str]] = None
 
     model_config = {"from_attributes": True}
 

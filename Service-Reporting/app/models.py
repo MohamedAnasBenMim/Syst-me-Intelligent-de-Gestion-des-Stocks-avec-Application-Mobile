@@ -70,3 +70,32 @@ class Prevision(Base):
     # Quand cette prévision a été calculée
     calcule_le   = Column(DateTime(timezone=True), server_default=func.now())
     est_active   = Column(Boolean, default=True)
+
+
+# ── Table calculs_profit_perte ─────────────────────────────────
+# Historise chaque calcul P&L effectué par l'admin
+class CalculProfitPerte(Base):
+    __tablename__ = "calculs_profit_perte"
+
+    id                = Column(Integer, primary_key=True, index=True)
+
+    # Dépenses saisies par l'admin
+    depense_eau       = Column(Float, default=0.0, nullable=False)
+    depense_electricite = Column(Float, default=0.0, nullable=False)
+    depense_salaires  = Column(Float, default=0.0, nullable=False)
+    depense_pertes_produits = Column(Float, default=0.0, nullable=False)
+    depense_autres    = Column(Float, default=0.0, nullable=False)
+
+    # Résultats calculés automatiquement
+    total_depenses    = Column(Float, nullable=False)
+    valeur_stock      = Column(Float, nullable=False)
+    profit            = Column(Float, nullable=False)   # peut être négatif
+    statut            = Column(String(20), nullable=False)  # benefice / perte / equilibre
+
+    # Analyse IA (texte généré par le LLM)
+    analyse_ia        = Column(Text, nullable=True)
+
+    # Qui a fait le calcul
+    calcule_par_id    = Column(Integer, nullable=True)
+    calcule_par_nom   = Column(String(200), nullable=True)
+    calcule_le        = Column(DateTime(timezone=True), server_default=func.now())
