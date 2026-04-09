@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 import httpx
 import json
 import time
@@ -111,16 +111,16 @@ def mouvement_to_text(m: dict) -> str:
     date        = m.get("created_at", "")[:10]
     type_mvt    = m.get("type_mouvement", "mouvement")
     quantite    = m.get("quantite", 0)
-    produit_id  = m.get("produit_id", "?")
-    produit_nom = m.get("produit", {}).get("designation", f"Produit {produit_id}")
-    entrepot_id = m.get("entrepot_id", "?")
-    entrepot_nom = m.get("entrepot", {}).get("nom", f"Entrepôt {entrepot_id}")
-    stock_apres  = m.get("stock_apres", "N/A")
+    produit_id  = m.get("produit_id") or 0
+    produit_nom = m.get("produit", {}).get("designation") or f"Produit {produit_id}"
+    entrepot_id = m.get("entrepot_id") or 0
+    entrepot_nom = m.get("entrepot", {}).get("nom") or f"Entrepôt {entrepot_id}"
+    stock_apres  = m.get("stock_apres")
     reference    = m.get("reference", "")
 
     texte = f"Le {date}, {type_mvt} de {quantite} unités du produit {produit_nom} (ID:{produit_id})"
     texte += f" depuis {entrepot_nom}."
-    if stock_apres != "N/A":
+    if stock_apres is not None:
         texte += f" Stock après opération: {stock_apres} unités."
     if reference:
         texte += f" Référence: {reference}."
@@ -281,29 +281,33 @@ def recherche_semantique(query: str, n_results: int = 5,
 # GÉNÉRATION LLM
 # ═══════════════════════════════════════════════════════
 
-def appeler_llm(prompt: str) -> str:
+def appeler_llm(prompt: str, force_json: bool = False) -> str:
     """
     Appelle le LLM dans l'ordre de priorité :
       1. Groq API (gratuit, sans expiration) — mixtral-8x7b-32768
       2. Ollama (fallback local si Groq indisponible)
     Retourne None si tous les fournisseurs sont indisponibles.
+    force_json=True : demande à Groq de répondre en JSON pur (pour les recommandations).
     """
     # ── 1. GROQ (prioritaire) ─────────────────────────
     groq_key = settings.GROQ_API_KEY
     if groq_key and groq_key.startswith("gsk_"):
         try:
+            body = {
+                "model":       settings.GROQ_MODEL,
+                "messages":    [{"role": "user", "content": prompt}],
+                "temperature": settings.TEMPERATURE,
+                "max_tokens":  500,
+            }
+            if force_json:
+                body["response_format"] = {"type": "json_object"}
             response = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {groq_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model":       settings.GROQ_MODEL,
-                    "messages":    [{"role": "user", "content": prompt}],
-                    "temperature": settings.TEMPERATURE,
-                    "max_tokens":  500,
-                },
+                json=body,
                 timeout=30,
             )
             if response.status_code == 200:
@@ -369,14 +373,30 @@ RÉPONDS AU FORMAT JSON UNIQUEMENT:
 def parser_reponse_llm(reponse: str, produit_nom: str,
                         stock_actuel: float, seuil_min: float) -> dict:
     """Parse la réponse JSON du LLM. Fallback règles métier si parsing échoue."""
+    import re as _re
+
+    def _try_parse(text: str):
+        """Tente de parser le JSON depuis le texte brut."""
+        # 1. Bloc ```json ... ``` ou ``` ... ```
+        m = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, _re.DOTALL)
+        if m:
+            return json.loads(m.group(1))
+        # 2. JSON brut depuis le début
+        text = text.strip()
+        if text.startswith("{"):
+            return json.loads(text)
+        # 3. Premier bloc JSON n'importe où dans le texte
+        m = _re.search(r"\{[^{}]*\}", text, _re.DOTALL)
+        if m:
+            return json.loads(m.group())
+        # 4. JSON multi-niveaux (avec objets imbriqués)
+        m = _re.search(r"\{.*\}", text, _re.DOTALL)
+        if m:
+            return json.loads(m.group())
+        raise ValueError("Aucun JSON trouvé")
+
     try:
-        r = reponse.strip()
-        for prefix in ["```json", "```"]:
-            if r.startswith(prefix):
-                r = r[len(prefix):]
-        if r.endswith("```"):
-            r = r[:-3]
-        data = json.loads(r)
+        data = _try_parse(reponse or "")
         return {
             "titre":               data.get("titre", f"Réapprovisionnement {produit_nom}"),
             "contenu":             data.get("contenu", "Recommandation générée par IA"),
@@ -385,7 +405,8 @@ def parser_reponse_llm(reponse: str, produit_nom: str,
             "fournisseur_suggere": data.get("fournisseur_suggere"),
             "confiance_score":     data.get("confiance", 0.7)
         }
-    except Exception:
+    except Exception as e:
+        logger.warning(f"parser_reponse_llm échec ({e}), fallback règles métier")
         quantite = max(seuil_min * 3, 50) if seuil_min else 100
         return {
             "titre":               f"Réapprovisionnement urgent - {produit_nom}",
@@ -493,7 +514,7 @@ async def route_generer_recommandation(
     prompt       = construire_prompt(request.produit_id, produit_nom, entrepot_nom,
                                      stock_actuel, seuil_min, contexte_rag,
                                      request.contexte_supplementaire)
-    llm_response = appeler_llm(prompt)
+    llm_response = appeler_llm(prompt, force_json=True)
     result       = parser_reponse_llm(llm_response or "", produit_nom, stock_actuel, seuil_min)
 
     # Sauvegarde PostgreSQL
@@ -504,11 +525,12 @@ async def route_generer_recommandation(
         titre=result["titre"], contenu=result["contenu"],
         quantite_suggeree=result.get("quantite_suggeree"),
         fournisseur_suggere=result.get("fournisseur_suggere"),
-        urgence=UrgenceLevel(result.get("urgence", "moyenne")),
+        urgence=UrgenceLevel((result.get("urgence", "MOYENNE") or "MOYENNE").upper()),
         confiance_score=result.get("confiance_score", 0.5),
         sources_rag=[r["document"][:100] for r in contexte_rag[:3]],
         contexte_utilise={"stock_actuel": stock_actuel, "seuil_min": seuil_min,
-                          "rag_documents": len(contexte_rag)},
+                          "rag_documents": len(contexte_rag),
+                          "date_expiration": request.date_expiration},
         temps_generation_ms=int((time.time() - start_time) * 1000)
     )
     db.add(recommandation)
@@ -613,7 +635,7 @@ RÉPONDS AU FORMAT JSON UNIQUEMENT :
     "confiance": 0.0 à 1.0
 }}"""
 
-    llm_response = appeler_llm(prompt)
+    llm_response = appeler_llm(prompt, force_json=True)
 
     # ── Parser la réponse ─────────────────────────────────────────
     pourcentage  = 20.0
@@ -656,14 +678,18 @@ RÉPONDS AU FORMAT JSON UNIQUEMENT :
         titre               = f"Promotion {pourcentage:.0f}% — {produit_nom}",
         contenu             = analyse,
         quantite_suggeree   = None,
-        urgence             = UrgenceLevel(urgence_val if urgence_val in ("critique","haute","moyenne","basse") else "moyenne"),
+        urgence             = UrgenceLevel((urgence_val or "MOYENNE").upper() if (urgence_val or "").lower() in ("critique","haute","moyenne","basse") else "MOYENNE"),
         confiance_score     = confiance,
         sources_rag         = [r["document"][:100] for r in contexte_rag[:3]],
         contexte_utilise    = {
-            "type":                  "promotion",
-            "pourcentage_suggere":   pourcentage,
+            "type":                   "promotion",
+            "pourcentage_suggere":    pourcentage,
             "jours_avant_expiration": request.jours_avant_expiration,
-            "prix_actuel":           prix_actuel,
+            "date_expiration":        (
+                (datetime.now().date() + timedelta(days=request.jours_avant_expiration)).isoformat()
+                if request.jours_avant_expiration is not None else None
+            ),
+            "prix_actuel":            prix_actuel,
         },
         temps_generation_ms = int((time.time() - start_time) * 1000)
     )
@@ -775,7 +801,7 @@ async def route_feedback(
             f"Entrepôt {r.entrepot_id}",
             stock_actuel, seuil_min, contexte_rag, contexte_rejet
         )
-        llm_resp = appeler_llm(prompt)
+        llm_resp = appeler_llm(prompt, force_json=True)
         result   = parser_reponse_llm(
             llm_resp or "", f"Produit {r.produit_id}", stock_actuel, seuil_min
         )
@@ -789,11 +815,16 @@ async def route_feedback(
             contenu             = result["contenu"],
             quantite_suggeree   = result.get("quantite_suggeree"),
             fournisseur_suggere = result.get("fournisseur_suggere"),
-            urgence             = UrgenceLevel(result.get("urgence", "moyenne")),
+            urgence             = UrgenceLevel((result.get("urgence", "MOYENNE") or "MOYENNE").upper()),
             confiance_score     = result.get("confiance_score", 0.5),
             sources_rag         = [r2["document"][:100] for r2 in contexte_rag[:3]],
-            contexte_utilise    = {"stock_actuel": stock_actuel, "seuil_min": seuil_min,
-                                   "rejet_precedent": recommandation_id},
+            contexte_utilise    = {
+                "stock_actuel":     stock_actuel,
+                "seuil_min":        seuil_min,
+                "rejet_precedent":  recommandation_id,
+                # Propager date_expiration depuis la recommandation rejetée
+                "date_expiration":  (r.contexte_utilise or {}).get("date_expiration"),
+            },
         )
         db.add(nouvelle)
         db.commit()
@@ -826,6 +857,68 @@ async def route_recherche(
     )
 
 
+async def recuperer_contexte_temps_reel(token: str) -> str:
+    """
+    Récupère depuis les services : stocks actuels, alertes actives, prévisions ML.
+    Retourne un bloc texte structuré injecté dans le prompt de /ia/question.
+    """
+    lignes = []
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # ── Stocks actuels ───────────────────────────────────
+            r = await client.get(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/stocks",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"per_page": 200}
+            )
+            if r.status_code == 200:
+                stocks = r.json()
+                if isinstance(stocks, dict):
+                    stocks = stocks.get("stocks", [])
+                lignes.append("=== STOCKS ACTUELS ===")
+                for s in stocks:
+                    p = s.get("produit") or {}
+                    e = s.get("entrepot") or {}
+                    nom = p.get("designation", f"Produit {s.get('produit_id')}")
+                    entrepot = e.get("nom", f"Entrepôt {s.get('entrepot_id')}")
+                    qte = s.get("quantite", 0)
+                    seuil = p.get("seuil_alerte_min", 10)
+                    exp = p.get("date_expiration", "")
+                    statut = "CRITIQUE" if qte < seuil else ("BAS" if qte < seuil * 2 else "OK")
+                    ligne = f"- {nom} | {entrepot} | stock={qte} unités | seuil_min={seuil} | statut={statut}"
+                    if exp:
+                        ligne += f" | expire={exp}"
+                    lignes.append(ligne)
+
+            # ── Alertes (actives + critiques) ────────────────────
+            r = await client.get(
+                f"{settings.ALERTES_SERVICE_URL}/api/v1/alertes",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"per_page": 50}
+            )
+            if r.status_code == 200:
+                alertes = r.json()
+                if isinstance(alertes, dict):
+                    alertes = alertes.get("alertes", [])
+                actives = [a for a in alertes if a.get("statut") in ("ACTIVE", "active")]
+                if actives:
+                    lignes.append("=== ALERTES ACTIVES ===")
+                    for a in actives[:10]:
+                        lignes.append(
+                            f"- [{a.get('niveau')}] {a.get('produit_nom')} | "
+                            f"entrepot={a.get('entrepot_nom')} | "
+                            f"qte={a.get('quantite_actuelle')} | "
+                            f"{str(a.get('message',''))[:100]}"
+                        )
+                else:
+                    lignes.append("=== ALERTES ACTIVES ===")
+                    lignes.append("- Aucune alerte active pour le moment")
+    except Exception as e:
+        logger.warning(f"Erreur récupération contexte temps réel: {e}")
+
+    return "\n".join(lignes) if lignes else ""
+
+
 @router.post("/ia/question", response_model=QuestionResponse,
              summary="Poser une question libre à l'IA (RAG Q&A)")
 async def route_question(
@@ -835,18 +928,13 @@ async def route_question(
 ):
     """
     Pose une question en langage naturel.
-    L'IA cherche dans l'historique vectorisé (ChromaDB) les informations
-    pertinentes, puis génère une réponse avec Groq.
-
-    Exemples de questions :
-    - "Quel produit a eu le plus de sorties ce mois ?"
-    - "Y a-t-il des mouvements suspects dans l'entrepôt 1 ?"
-    - "Quand a eu lieu la dernière entrée du produit 2 ?"
+    L'IA combine : données temps réel (stocks, alertes) + historique vectorisé (ChromaDB).
     """
     start_time = time.time()
+    token      = credentials.credentials
 
     # Auto-vectorisation si ChromaDB est vide
-    await auto_vectoriser_si_vide(credentials.credentials)
+    await auto_vectoriser_si_vide(token)
 
     # Recherche sémantique dans ChromaDB
     contexte_rag = recherche_semantique(
@@ -854,29 +942,38 @@ async def route_question(
         request.produit_id, request.entrepot_id
     )
 
-    contexte_str = "\n".join([f"- {r['document']}" for r in contexte_rag]) \
-                   if contexte_rag else "Aucun document trouvé dans la base vectorielle."
+    # Données temps réel (stocks + alertes)
+    contexte_reel = await recuperer_contexte_temps_reel(token)
+
+    contexte_rag_str = "\n".join([f"- {r['document']}" for r in contexte_rag]) \
+                       if contexte_rag else "Aucun mouvement récent trouvé."
 
     prompt = f"""Tu es un assistant expert en gestion de stock pour une entreprise tunisienne.
-Réponds en français, de manière claire et concise, en te basant uniquement sur le contexte fourni.
+Réponds en français, de manière claire, précise et utile, en te basant sur les données fournies.
 
 QUESTION DE L'UTILISATEUR:
 {request.question}
 
-CONTEXTE EXTRAIT DE L'HISTORIQUE (RAG):
-{contexte_str}
+DONNÉES EN TEMPS RÉEL (stocks actuels + alertes actives):
+{contexte_reel if contexte_reel else "Données non disponibles."}
 
-Si le contexte ne contient pas assez d'informations pour répondre, dis-le clairement.
-Ne génère pas de JSON. Réponds directement en texte naturel."""
+HISTORIQUE DES MOUVEMENTS (contexte RAG - dernières opérations):
+{contexte_rag_str}
+
+INSTRUCTIONS:
+- Utilise les données temps réel en priorité pour répondre (stocks, alertes, seuils)
+- Complète avec l'historique des mouvements si pertinent
+- Donne des chiffres précis (stock actuel, jours avant rupture, quantité à commander)
+- Si un produit est en alerte critique, indique-le clairement
+- Réponds directement en texte naturel, sans JSON"""
 
     llm_response = appeler_llm(prompt)
 
     if not llm_response:
         reponse = (
-            "Je n'ai pas pu générer une réponse (LLM indisponible). "
-            f"Voici les {len(contexte_rag)} documents trouvés dans l'historique : "
-            + " | ".join([r["document"][:80] for r in contexte_rag[:3]])
-        ) if contexte_rag else "Aucune information trouvée dans l'historique vectorisé."
+            "LLM indisponible. "
+            + (contexte_reel[:500] if contexte_reel else "Aucune donnée disponible.")
+        )
     else:
         reponse = llm_response.strip()
 
@@ -891,21 +988,24 @@ Ne génère pas de JSON. Réponds directement en texte naturel."""
 
 
 @router.get("/ia/previsions", response_model=PrevisionResponse,
-            summary="Prévisions Prophet ML — jours avant rupture par produit")
+            summary="Prévisions ML — état et jours avant rupture pour TOUS les produits")
 async def route_previsions(
-    seuil_jours:  int  = Query(default=30, ge=1, le=365,
-                               description="Afficher uniquement les produits dont la rupture est prévue dans X jours"),
+    seuil_jours:  int  = Query(default=365, ge=1, le=3650,
+                               description="Afficher les produits dont la rupture est prévue dans X jours (défaut=365 = tous)"),
     current_user: dict = Depends(get_current_gestionnaire_or_admin),
     credentials:  HTTPAuthorizationCredentials = Depends(security),
 ):
     """
-    Calcule pour chaque produit en stock faible/critique :
+    Calcule pour TOUS les produits en stock :
     - La consommation moyenne quotidienne (30 derniers jours de SORTIES)
     - Le nombre de jours avant rupture = stock_actuel / conso_par_jour
     - La quantité recommandée à commander = conso_par_jour × 30
-    - L'urgence : critique (0j) / haute (≤7j) / moyenne (≤30j) / basse (>30j)
-    Méthode : moyenne glissante pondérée (Prophet ML simplifié)
+    - L'urgence : critique / haute / moyenne / basse / stable (aucune sortie)
+    Méthode : moyenne glissante pondérée sur 30 jours
     """
+    from collections import defaultdict
+    from datetime import timezone
+
     token = credentials.credentials
     previsions: list[PrevisionProduit] = []
 
@@ -927,10 +1027,10 @@ async def route_previsions(
     if not stocks:
         return PrevisionResponse(
             success=True, previsions=[], total=0,
-            genere_le=datetime.utcnow()
+            genere_le=datetime.now(timezone.utc)
         )
 
-    # ── 2. Récupérer l'historique des mouvements (60 jours) ───────
+    # ── 2. Récupérer l'historique des mouvements (30 derniers jours) ─
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             r = await client.get(
@@ -945,11 +1045,9 @@ async def route_previsions(
         logger.error(f"Erreur récupération mouvements: {e}")
         mouvements = []
 
-    # ── 3. Calculer conso moyenne par (produit_id, entrepot_id) ───
-    from collections import defaultdict
-    from datetime import timezone
-
-    sorties: dict = defaultdict(list)  # (produit_id, entrepot_id) → [quantites]
+    # ── 3. Calculer sorties par (produit_id, entrepot_id) sur 30j ──
+    # Utilise entrepot_source_id pour les SORTIES (schéma Mouvement)
+    sorties: dict = defaultdict(list)
     now = datetime.now(timezone.utc)
 
     for m in mouvements:
@@ -960,66 +1058,71 @@ async def route_previsions(
             if date_str:
                 dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
                 if (now - dt).days <= 30:
-                    key = (m.get("produit_id"), m.get("entrepot_id"))
-                    sorties[key].append(float(m.get("quantite", 0)))
+                    pid = m.get("produit_id")
+                    # Pour une SORTIE : entrepot_source_id est l'entrepôt concerné
+                    eid = m.get("entrepot_source_id") or m.get("entrepot_id")
+                    sorties[(pid, eid)].append(float(m.get("quantite", 0)))
         except Exception:
             continue
 
-    # ── 4. Calculer la prévision pour chaque stock ────────────────
+    # ── 4. Calculer la prévision pour TOUS les stocks ─────────────
     for stock in stocks:
         try:
             produit_id  = stock.get("produit_id")
             entrepot_id = stock.get("entrepot_id")
             quantite    = float(stock.get("quantite", 0))
-
             produit     = stock.get("produit") or {}
             entrepot    = stock.get("entrepot") or {}
             seuil_min   = float(produit.get("seuil_alerte_min") or 10)
+            seuil_max   = float(produit.get("seuil_alerte_max") or 1000)
 
-            # Ne calculer que les produits proches du seuil
-            if quantite > seuil_min * 3:
-                continue
-
-            key        = (produit_id, entrepot_id)
-            sorties_30 = sorties.get(key, [])
-
-            # Consommation moyenne / jour sur 30 jours
+            sorties_30   = sorties.get((produit_id, entrepot_id), [])
             total_sorties = sum(sorties_30)
-            conso_par_jour = round(total_sorties / 30, 2) if total_sorties > 0 else 0.5
 
-            # Jours avant rupture
-            jours = round(quantite / conso_par_jour, 1) if conso_par_jour > 0 else 999.0
+            if total_sorties > 0:
+                # Consommation réelle basée sur les sorties des 30 derniers jours
+                conso_par_jour = round(total_sorties / 30, 2)
+                jours          = round(quantite / conso_par_jour, 1)
+                tendance       = "stable"
+                if len(sorties_30) >= 4:
+                    m2 = len(sorties_30) // 2
+                    moy1 = sum(sorties_30[:m2]) / m2
+                    moy2 = sum(sorties_30[m2:]) / (len(sorties_30) - m2)
+                    if moy2 > moy1 * 1.1:
+                        tendance = "hausse"
+                    elif moy2 < moy1 * 0.9:
+                        tendance = "baisse"
+            else:
+                # Aucune sortie → stock stable, pas de consommation mesurable
+                conso_par_jour = 0.0
+                jours          = 9999.0
+                tendance       = "stable"
 
-            # Filtrer selon seuil_jours demandé
-            if jours > seuil_jours:
-                continue
-
-            # Quantité à commander = 30 jours de conso
-            qte_commander = round(max(conso_par_jour * 30, seuil_min * 2), 0)
+            # Quantité à commander = 30 jours de conso (ou seuil_min si pas de conso)
+            qte_commander = round(
+                max(conso_par_jour * 30, seuil_min * 2) if conso_par_jour > 0 else seuil_min * 2,
+                0
+            )
 
             # Urgence
-            if jours <= 0:
+            if conso_par_jour == 0:
+                urgence = "stable"
+                recommandation = "Aucune sortie enregistrée — stock stable. Surveiller les entrées futures."
+            elif jours <= 0:
                 urgence = "critique"
+                recommandation = f"RUPTURE IMMINENTE ! Commander {int(qte_commander)} unités immédiatement."
             elif jours <= 7:
                 urgence = "haute"
+                recommandation = f"Rupture dans {jours:.0f}j — commander {int(qte_commander)} unités cette semaine."
             elif jours <= 30:
                 urgence = "moyenne"
+                recommandation = f"Rupture dans {jours:.0f}j — planifier une commande de {int(qte_commander)} unités."
+            elif quantite > seuil_max:
+                urgence = "basse"
+                recommandation = f"Surstock détecté ({quantite:.0f} > seuil max {seuil_max:.0f}). Réduire les entrées."
             else:
                 urgence = "basse"
-
-            # Tendance (compare première et deuxième moitié des sorties)
-            if len(sorties_30) >= 4:
-                moitie = len(sorties_30) // 2
-                moy1   = sum(sorties_30[:moitie]) / moitie
-                moy2   = sum(sorties_30[moitie:]) / (len(sorties_30) - moitie)
-                if moy2 > moy1 * 1.1:
-                    tendance = "hausse"
-                elif moy2 < moy1 * 0.9:
-                    tendance = "baisse"
-                else:
-                    tendance = "stable"
-            else:
-                tendance = "stable"
+                recommandation = f"Stock OK — rupture estimée dans {jours:.0f}j à ce rythme de consommation."
 
             previsions.append(PrevisionProduit(
                 produit_id            = produit_id,
@@ -1033,13 +1136,15 @@ async def route_previsions(
                 quantite_a_commander  = qte_commander,
                 urgence               = urgence,
                 tendance              = tendance,
+                recommandation        = recommandation,
             ))
         except Exception as e:
             logger.error(f"Erreur calcul prévision stock {stock}: {e}")
             continue
 
-    # Trier par urgence (moins de jours = premier)
-    previsions.sort(key=lambda p: p.jours_avant_rupture)
+    # Trier : critiques en premier, stables en dernier
+    ordre = {"critique": 0, "haute": 1, "moyenne": 2, "basse": 3, "stable": 4}
+    previsions.sort(key=lambda p: (ordre.get(p.urgence, 5), p.jours_avant_rupture))
 
     return PrevisionResponse(
         success    = True,

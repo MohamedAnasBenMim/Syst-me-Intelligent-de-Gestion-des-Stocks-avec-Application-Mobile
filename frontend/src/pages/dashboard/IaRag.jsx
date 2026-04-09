@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Brain, Send, Loader, RefreshCw, Zap } from 'lucide-react'
+import { Brain, Send, Loader, RefreshCw, Zap, ThumbsUp, ThumbsDown } from 'lucide-react'
 import DashboardLayout from '../../components/DashboardLayout'
 import { askQuestion, getIaStats } from '../../services/api'
 import { useAuth } from '../../context/AuthContext'
@@ -13,28 +13,76 @@ const SUGGESTIONS = [
   'Quels produits risquent une rupture de stock ?',
 ]
 
-function MessageBubble({ msg, userInitials }) {
+function MessageBubble({ msg, userInitials, onFeedback }) {
   const isUser = msg.role === 'user'
+  const [vote, setVote] = useState(null)   // 'up' | 'down' | null
+
+  function handleVote(v) {
+    if (vote === v) { setVote(null); return }
+    setVote(v)
+    onFeedback?.(v)
+  }
+
   return (
     <div className={`msg-row ${isUser ? 'msg-row--user' : 'msg-row--ai'}`}>
       {!isUser && (
         <div className="msg-avatar ai-avatar"><Brain size={16} color="#fff" /></div>
       )}
-      <div className={`msg-bubble ${isUser ? 'bubble-user' : 'bubble-ai'}`}>
-        <div className="msg-text">{msg.content}</div>
-        {msg.sources?.length > 0 && (
-          <details className="msg-sources">
-            <summary>Sources utilisées ({msg.sources.length})</summary>
-            <ul>
-              {msg.sources.map((s, i) => (
-                <li key={i}>{s}</li>
-              ))}
-            </ul>
-          </details>
-        )}
-        {msg.meta && (
-          <div className="msg-meta">
-            {msg.meta.docs} docs · {msg.meta.ms}ms
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+        <div className={`msg-bubble ${isUser ? 'bubble-user' : 'bubble-ai'}`}>
+          <div className="msg-text">{msg.content}</div>
+          {msg.sources?.length > 0 && (
+            <details className="msg-sources">
+              <summary>Sources utilisées ({msg.sources.length})</summary>
+              <ul>
+                {msg.sources.map((s, i) => (
+                  <li key={i}>{s}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {msg.meta && (
+            <div className="msg-meta">
+              {msg.meta.docs} docs · {msg.meta.ms}ms
+            </div>
+          )}
+        </div>
+
+        {/* Feedback sur les réponses IA uniquement */}
+        {!isUser && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 4 }}>
+            <span style={{ fontSize: 11, color: '#9CA3AF' }}>Utile ?</span>
+            <button
+              onClick={() => handleVote('up')}
+              title="Réponse utile"
+              style={{
+                background: vote === 'up' ? '#D1FAE5' : 'transparent',
+                border: '1px solid ' + (vote === 'up' ? '#28A745' : '#E5E7EB'),
+                borderRadius: 6, padding: '3px 8px', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 4,
+                color: vote === 'up' ? '#28A745' : '#9CA3AF', fontSize: 12,
+              }}
+            >
+              <ThumbsUp size={13} /> {vote === 'up' ? 'Utile' : ''}
+            </button>
+            <button
+              onClick={() => handleVote('down')}
+              title="Réponse non utile"
+              style={{
+                background: vote === 'down' ? '#FEE2E2' : 'transparent',
+                border: '1px solid ' + (vote === 'down' ? '#DC3545' : '#E5E7EB'),
+                borderRadius: 6, padding: '3px 8px', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: 4,
+                color: vote === 'down' ? '#DC3545' : '#9CA3AF', fontSize: 12,
+              }}
+            >
+              <ThumbsDown size={13} /> {vote === 'down' ? 'Non utile' : ''}
+            </button>
+            {vote && (
+              <span style={{ fontSize: 11, color: '#6B7280', fontStyle: 'italic' }}>
+                Merci pour votre retour !
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -171,7 +219,12 @@ export default function IaRag() {
           )}
 
           {messages.map((msg, i) => (
-            <MessageBubble key={i} msg={msg} userInitials={initiales} />
+            <MessageBubble
+              key={i}
+              msg={msg}
+              userInitials={initiales}
+              onFeedback={vote => console.info(`[RAG feedback] msg#${i} → ${vote}`)}
+            />
           ))}
 
           {loading && (

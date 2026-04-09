@@ -114,7 +114,16 @@ def generer_template_alerte(data: NotificationEnvoyer) -> tuple[str, str]:
                 </tr>
             </table>
 
+            {f'''
             <div style="margin-top: 20px; padding: 15px;
+                        background-color: #EFF6FF; border-radius: 4px;
+                        border-left: 4px solid #3B82F6;">
+                <strong>🤖 Recommandation IA :</strong><br><br>
+                {data.recommandation_ia}
+            </div>
+            ''' if data.recommandation_ia else ''}
+
+            <div style="margin-top: 15px; padding: 15px;
                         background-color: #fff3cd; border-radius: 4px;">
                 <strong>Action requise :</strong>
                 Connectez-vous à l'application SGS SaaS pour traiter cette alerte.

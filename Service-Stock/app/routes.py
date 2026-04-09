@@ -30,11 +30,13 @@ async def _notifier_alerte(
     token:       str,
 ):
     """Appelle le Service Alertes après chaque modification de stock."""
-    if niveau == "normal":
+    # Les enums du service-alertes sont en MAJUSCULES
+    niveau_upper = niveau.upper()
+    if niveau_upper == "NORMAL":
         payload = {
             "produit_id":       produit.id,
             "entrepot_id":      stock.entrepot_id,
-            "niveau":           "normal",
+            "niveau":           "NORMAL",
             "quantite_actuelle": stock.quantite,
         }
     else:
@@ -42,7 +44,7 @@ async def _notifier_alerte(
             "produit_id":        produit.id,
             "produit_nom":       produit.designation,
             "entrepot_id":       stock.entrepot_id,
-            "niveau":            niveau,
+            "niveau":            niveau_upper,
             "quantite_actuelle": stock.quantite,
             "seuil_alerte_min":  produit.seuil_alerte_min,
             "seuil_alerte_max":  produit.seuil_alerte_max,
@@ -272,12 +274,15 @@ async def delete_produit(
 )
 async def list_stocks(
     entrepot_id: Optional[int] = Query(None),
+    produit_id:  Optional[int] = Query(None),
     db:          Session       = Depends(get_db),
     _user:       dict          = Depends(get_current_user),
 ):
     query = db.query(models.Stock)
     if entrepot_id:
         query = query.filter(models.Stock.entrepot_id == entrepot_id)
+    if produit_id:
+        query = query.filter(models.Stock.produit_id == produit_id)
     return query.all()
 
 
@@ -506,7 +511,7 @@ def _calculer_niveau_alerte(
     ).first()
     if not produit:
         return "normal"
-    if quantite < produit.seuil_alerte_min:
+    if quantite < produit.seuil_alerte_min:    # < : stock strictement sous le seuil = critique
         return "critique"
     if quantite > produit.seuil_alerte_max:
         return "surstock"

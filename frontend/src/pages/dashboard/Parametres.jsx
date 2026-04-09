@@ -40,6 +40,11 @@ export default function Parametres() {
       return
     }
 
+    if (!form.ancien) {
+      setError('Veuillez saisir votre mot de passe actuel.')
+      return
+    }
+
     setLoading(true)
     try {
       await changePassword(me.id, {
@@ -49,7 +54,16 @@ export default function Parametres() {
       setSuccess(true)
       setForm({ ancien: '', nouveau: '', confirm: '' })
     } catch (err) {
-      setError(err.message)
+      // Traduit les erreurs backend courantes en messages clairs
+      const msg = err.message || ''
+      if (msg.includes('Ancien mot de passe incorrect') || msg.includes('ancien'))
+        setError('Mot de passe actuel incorrect. Vérifiez et réessayez.')
+      else if (msg.includes('différent'))
+        setError('Le nouveau mot de passe doit être différent de l\'ancien.')
+      else if (msg.includes('min_length') || msg.includes('minimum'))
+        setError('Le nouveau mot de passe doit contenir au moins 6 caractères.')
+      else
+        setError(msg || 'Une erreur est survenue. Réessayez.')
     } finally {
       setLoading(false)
     }

@@ -33,6 +33,9 @@ class AlertesSettings(BaseSettings):
     NOTIFICATION_SERVICE_URL: str = "http://localhost:8006"
     IA_RAG_SERVICE_URL:       str = "http://localhost:8008"
 
+    # ── Email destinataire des alertes ────────────────────
+    ADMIN_EMAIL: str = ""   # si vide → service-notification utilise SMTP_USER
+
     # ── Validation ────────────────────────────────────────
     @field_validator("ALERTE_DATABASE_URL")
     @classmethod

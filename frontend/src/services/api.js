@@ -33,9 +33,15 @@ function qs(params = {}) {
 async function handleResponse(res) {
   const data = await res.json()
   if (!res.ok) {
-    const message = typeof data.detail === 'string'
-      ? data.detail
-      : JSON.stringify(data.detail)
+    let message
+    if (typeof data.detail === 'string') {
+      message = data.detail
+    } else if (Array.isArray(data.detail)) {
+      // Erreur de validation Pydantic (422) → extraire les messages lisibles
+      message = data.detail.map(e => e.msg || JSON.stringify(e)).join(' | ')
+    } else {
+      message = JSON.stringify(data.detail)
+    }
     throw new Error(message)
   }
   return data
@@ -72,6 +78,36 @@ export async function register(data) {
 /** GET /auth/me → UtilisateurResponse */
 export async function getMe() {
   const res = await fetch(`${AUTH_URL}/auth/me`, { headers: bearerHeader() })
+  return handleResponse(res)
+}
+
+/** POST /auth/forgot-password → { message } */
+export async function forgotPassword(email) {
+  const res = await fetch(`${AUTH_URL}/auth/forgot-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  })
+  return handleResponse(res)
+}
+
+/** POST /auth/clerk-login → TokenResponse (connexion via Google/Clerk) */
+export async function clerkLogin({ clerk_user_id, clerk_token, email, prenom, nom }) {
+  const res = await fetch(`${AUTH_URL}/auth/clerk-login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clerk_user_id, clerk_token, email, prenom, nom }),
+  })
+  return handleResponse(res)
+}
+
+/** POST /auth/reset-password → { message } */
+export async function resetPassword(session_token, otp_code, nouveau_password) {
+  const res = await fetch(`${AUTH_URL}/auth/reset-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_token, otp_code, nouveau_password }),
+  })
   return handleResponse(res)
 }
 
@@ -318,6 +354,24 @@ export async function getAlertesStats() {
   return handleResponse(res)
 }
 
+/** POST /alertes/verifier-stocks → { success, alertes_declenchees } */
+export async function verifierStocks() {
+  const res = await fetch(`${ALERTES_URL}/alertes/verifier-stocks`, {
+    method: 'POST',
+    headers: bearerHeader(),
+  })
+  return handleResponse(res)
+}
+
+/** POST /alertes/verifier-expirations → { success, alertes_declenchees, produits_analyses } */
+export async function verifierExpirations(seuilJours = 30) {
+  const res = await fetch(`${ALERTES_URL}/alertes/verifier-expirations?seuil_jours=${seuilJours}`, {
+    method: 'POST',
+    headers: bearerHeader(),
+  })
+  return handleResponse(res)
+}
+
 /** PUT /alertes/{id} → AlerteResponse  (changer statut) */
 export async function updateAlerte(id, data) {
   const res = await fetch(`${ALERTES_URL}/alertes/${id}`, {
@@ -367,8 +421,8 @@ export async function getKpi() {
 }
 
 /** GET /reporting/previsions → List[PrevisionML] */
-export async function getPrevisionsML() {
-  const res = await fetch(`${REPORTING_URL}/reporting/previsions`, { headers: bearerHeader() })
+export async function getPrevisionsML(params = {}) {
+  const res = await fetch(`${REPORTING_URL}/reporting/previsions${qs(params)}`, { headers: bearerHeader() })
   return handleResponse(res)
 }
 

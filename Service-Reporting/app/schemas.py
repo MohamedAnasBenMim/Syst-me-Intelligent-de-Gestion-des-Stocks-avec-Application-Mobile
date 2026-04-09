@@ -63,6 +63,8 @@ class PrevisionML(BaseModel):
     jours_avant_rupture : Optional[int]
     confiance           : float
     recommandation      : str   # "Commander X unités avant le JJ/MM"
+    stock_prevu         : Optional[float] = None   # stock estimé à la fin de la période demandée
+    rupture_dans_periode: Optional[bool]  = None   # True si rupture < periode jours
 
     model_config = {"from_attributes": True}
 
@@ -84,6 +86,7 @@ class DashboardResponse(BaseModel):
 class RapportCreate(BaseModel):
     type_rapport : TypeRapport  = TypeRapport.MENSUEL
     titre        : Optional[str] = None
+    description  : Optional[str] = None
     date_debut   : Optional[datetime] = None
     date_fin     : Optional[datetime] = None
     entrepot_id  : Optional[int] = None
@@ -198,24 +201,28 @@ class AnalyseIA(BaseModel):
 
 class ProfitPerteResponse(BaseModel):
     """Réponse complète du calcul P&L."""
-    # Résumé
+    # CA réel (Σ sorties × prix unitaire) + indicateurs financiers
+    chiffre_affaires : float = 0.0   # CA réel depuis sorties
+    marge_brute      : float = 0.0   # CA - total_depenses
+    taux_marge       : float = 0.0   # marge_brute / CA × 100 (%)
+    # Résultats
     total_depenses  : float
-    valeur_stock    : float
+    valeur_stock    : float          # valeur monétaire du stock restant
     profit          : float
     statut          : str           # "benefice" | "perte" | "equilibre"
 
     # Détails
     detail_depenses : DetailDepenses
     detail_stock    : DetailStock
-    pertes_produits : Optional[PertesProduitsResponse] = None   # détail périmés par catégorie
-    salaires_detail : Optional[SalairesResponse]       = None   # détail salaires employés
+    pertes_produits : Optional[PertesProduitsResponse] = None
+    salaires_detail : Optional[SalairesResponse]       = None
 
     # Analyse IA
     analyse_ia      : Optional[AnalyseIA] = None
 
     # Métadonnées
     calcule_le      : datetime
-    calcul_id       : Optional[int] = None   # ID en base pour historique
+    calcul_id       : Optional[int] = None
 
     model_config = {"from_attributes": True}
 
@@ -225,6 +232,7 @@ class ProfitPerteHistorique(BaseModel):
     id               : int
     total_depenses   : float
     valeur_stock     : float
+    chiffre_affaires : Optional[float] = 0.0
     profit           : float
     statut           : str
     calcule_par_nom  : Optional[str]

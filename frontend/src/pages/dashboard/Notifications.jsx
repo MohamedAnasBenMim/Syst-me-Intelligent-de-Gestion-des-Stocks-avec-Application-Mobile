@@ -24,9 +24,12 @@ function truncate(str, n) {
 }
 
 const STATUT_CFG = {
-  envoye:     { badgeClass: 'badge-green',  label: 'Envoyé'     },
+  envoyee:    { badgeClass: 'badge-green',  label: 'Envoyé'     },
   en_attente: { badgeClass: 'badge-orange', label: 'En attente' },
   echec:      { badgeClass: 'badge-red',    label: 'Échec'      },
+  ENVOYEE:    { badgeClass: 'badge-green',  label: 'Envoyé'     },
+  EN_ATTENTE: { badgeClass: 'badge-orange', label: 'En attente' },
+  ECHEC:      { badgeClass: 'badge-red',    label: 'Échec'      },
 }
 
 // ── Toast ──────────────────────────────────────────────────

@@ -53,6 +53,54 @@ def create_access_token(data: dict) -> str:
     )
 
 
+# ── OTP de réinitialisation (code 6 chiffres, 15 min) ─────
+import hashlib, random as _random
+
+def generate_otp() -> str:
+    """Génère un code OTP à 6 chiffres."""
+    return f"{_random.randint(100000, 999999)}"
+
+
+def create_otp_session(user_id: int, email: str, otp: str) -> str:
+    """
+    Génère un JWT signé contenant le hash SHA-256 de l'OTP.
+    Valable 15 minutes. Retourné au frontend après envoi de l'email.
+    """
+    otp_hash = hashlib.sha256(otp.encode()).hexdigest()
+    payload = {
+        "user_id":  user_id,
+        "email":    email,
+        "otp_hash": otp_hash,
+        "type":     "otp_reset",
+        "exp":      datetime.utcnow() + timedelta(minutes=15),
+        "iat":      datetime.utcnow(),
+    }
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+
+def verify_otp_session(token: str, otp_code: str) -> dict:
+    """
+    Vérifie le JWT de session OTP et le code saisi par l'utilisateur.
+    Retourne {'user_id': int, 'email': str} ou lève HTTPException.
+    """
+    invalid = HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Code invalide ou expiré",
+    )
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        if payload.get("type") != "otp_reset":
+            raise invalid
+        expected = hashlib.sha256(otp_code.strip().encode()).hexdigest()
+        if expected != payload.get("otp_hash"):
+            raise invalid
+        return {"user_id": payload["user_id"], "email": payload["email"]}
+    except HTTPException:
+        raise
+    except Exception:
+        raise invalid
+
+
 # ── Vérification du token JWT ──────────────────────────────
 def verify_token(token: str) -> dict:
     """
