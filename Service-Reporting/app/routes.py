@@ -146,13 +146,16 @@ async def calculer_kpi(token: str) -> KPIGlobaux:
     for e in entrepots:
         capacite_max = e.get("capacite_max", 0)
         if capacite_max and capacite_max > 0:
-            # Somme des stocks dans cet entrepôt
             stock_entrepot = sum(
                 s.get("quantite", 0)
                 for s in stocks
                 if s.get("entrepot_id") == e.get("id")
             )
-            taux_list.append(round(stock_entrepot / capacite_max * 100, 2))
+            # Sanity check : si capacite_max < stock réel → valeur non configurée
+            # On la met à jour dynamiquement pour ne pas afficher > 100%
+            capacite_effective = max(capacite_max, stock_entrepot) if stock_entrepot > capacite_max else capacite_max
+            taux = round(stock_entrepot / capacite_effective * 100, 2)
+            taux_list.append(min(taux, 100.0))
     taux_moyen = round(sum(taux_list) / len(taux_list), 2) if taux_list else 0.0
 
     # ── Mouvements du jour ─────────────────────────────
@@ -163,10 +166,19 @@ async def calculer_kpi(token: str) -> KPIGlobaux:
     )
 
     # ── Valeur totale du stock ─────────────────────────
-    valeur_total = sum(
-        s.get("quantite", 0) * s.get("produit", {}).get("prix_unitaire", 0)
-        for s in stocks
-    )
+    # Utilise l'API promotions/actives pour les prix promo (fiable)
+    promos_kpi = await recuperer_promotions_actives(token)
+    valeur_total = 0.0
+    for s in stocks:
+        produit    = s.get("produit") or {}
+        quantite   = float(s.get("quantite", 0))
+        pid        = s.get("produit_id")
+        prix_unit  = float(produit.get("prix_unitaire") or 0)
+        prix_promo = promos_kpi.get(pid, 0) or (float(produit.get("prix_promo") or 0) if produit.get("en_promotion") else 0)
+        if prix_promo > 0:
+            valeur_total += quantite * prix_promo
+        else:
+            valeur_total += quantite * prix_unit
 
     return KPIGlobaux(
         total_produits        = len(set(s["produit_id"] for s in stocks)),
@@ -195,6 +207,7 @@ def predire_rupture_adaptative(
     seuil_min             : float,
     produit_id            : int,
     produit_nom           : str,
+    periode               : int = 30,
 ) -> PrevisionML:
     """
     ML PRÉDICTIF ADAPTATIF :
@@ -210,17 +223,22 @@ def predire_rupture_adaptative(
     def _construire_resultat(conso_jour, confiance, methode):
         jours        = int(stock_actuel / max(conso_jour, 0.01))
         date_rupture = datetime.now() + timedelta(days=jours)
-        quantite_cmd = int(conso_jour * 30 + seuil_min)
+        quantite_cmd = int(conso_jour * periode + seuil_min)
+        stock_fin    = round(max(stock_actuel - conso_jour * periode, 0), 2)
+        rupture      = jours <= periode
         return PrevisionML(
-            produit_id          = produit_id,
-            produit_nom         = produit_nom,
-            stock_actuel        = stock_actuel,
-            quantite_prevue     = round(max(stock_actuel - conso_jour, 0), 2),
-            date_prevision      = date_rupture,
-            jours_avant_rupture = jours,
-            confiance           = confiance,
-            recommandation      = (
-                f"Commander {quantite_cmd} unités — "
+            produit_id           = produit_id,
+            produit_nom          = produit_nom,
+            stock_actuel         = stock_actuel,
+            quantite_prevue      = round(max(stock_actuel - conso_jour, 0), 2),
+            date_prevision       = date_rupture,
+            jours_avant_rupture  = jours,
+            confiance            = confiance,
+            stock_prevu          = stock_fin,
+            rupture_dans_periode = rupture,
+            recommandation       = (
+                f"{'⚠ Rupture dans ' + str(jours) + 'j — c' if rupture else 'C'}"
+                f"ommander {quantite_cmd} unités — "
                 f"consommation estimée {round(conso_jour, 1)} unités/jour "
                 f"({methode})"
             )
@@ -438,6 +456,7 @@ async def get_dashboard(
 )
 async def get_previsions(
     produit_id  : Optional[int] = Query(None),
+    periode     : int           = Query(30, ge=1, le=365, description="Horizon de prévision en jours (7/15/30/60)"),
     db          : Session       = Depends(get_db),
     current_user: dict          = Depends(get_all_roles),
     credentials : HTTPAuthorizationCredentials = Depends(security),
@@ -450,7 +469,7 @@ async def get_previsions(
         stocks = [s for s in stocks if s.get("produit_id") == produit_id]
 
     previsions = []
-    for stock in stocks[:10]:
+    for stock in stocks:
         produit_info = stock.get("produit", {})
         previsions.append(predire_rupture_adaptative(
             historique_mouvements = mouvements,
@@ -458,7 +477,14 @@ async def get_previsions(
             seuil_min             = produit_info.get("seuil_alerte_min", 10),
             produit_id            = stock.get("produit_id"),
             produit_nom           = produit_info.get("designation", ""),
+            periode               = periode,
         ))
+
+    # Trier : ruptures dans la période d'abord, puis par jours_avant_rupture croissants
+    previsions.sort(key=lambda p: (
+        0 if p.rupture_dans_periode else 1,
+        p.jours_avant_rupture if p.jours_avant_rupture is not None else 9999
+    ))
     return previsions
 
 
@@ -505,6 +531,7 @@ async def generer_rapport(
             "total_mouvements_jour" : kpi.total_mouvements_jour,
             "total_alertes_actives" : kpi.total_alertes_actives,
             "taux_occupation_moyen" : kpi.taux_occupation_moyen,
+            "description"           : data.description,
         }),
         genere_par = current_user.get("user_id"),
     )
@@ -676,6 +703,32 @@ async def detecter_anomalies_reporting(
 # ═══════════════════════════════════════════════════════
 # PROFIT & PERTE — Helpers inter-services
 # ═══════════════════════════════════════════════════════
+
+async def recuperer_promotions_actives(token: str) -> dict:
+    """
+    Récupère les promotions actives depuis Service Stock.
+    Retourne un dict {produit_id: prix_promo} pour usage direct.
+    Plus fiable que le flag en_promotion sur le produit.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/promotions/actives",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10.0,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                promos = data.get("promotions", []) if isinstance(data, dict) else []
+                return {
+                    p["produit_id"]: p["prix_promo"]
+                    for p in promos
+                    if p.get("produit_id") and p.get("prix_promo", 0) > 0
+                }
+    except Exception:
+        pass
+    return {}
+
 
 async def recuperer_produits_avec_stocks(token: str) -> list:
     """Stocks avec détails produits (prix, promo, expiration)."""
@@ -914,11 +967,13 @@ async def calculer_profit_perte(
     token       = credentials.credentials
     aujourd_hui = datetime.now().date()
 
-    # ── 1. Stocks (valeur saine) + pertes auto ────────
-    stocks, (pertes_val, pertes_data), (salaires_val, salaires_data) = await asyncio.gather(
+    # ── 1. Stocks + pertes + salaires + mouvements + promotions actives ─
+    stocks, (pertes_val, pertes_data), (salaires_val, salaires_data), mouvements_all, promos_map = await asyncio.gather(
         recuperer_produits_avec_stocks(token),
         recuperer_pertes_produits_auto(token),
         recuperer_salaires_auto(token),
+        recuperer_mouvements(token),
+        recuperer_promotions_actives(token),
     )
 
     # ── 2. Décider pertes et salaires ─────────────────
@@ -928,7 +983,9 @@ async def calculer_profit_perte(
     montant_pertes   = pertes_val   if pertes_auto   else data.pertes_produits
     montant_salaires = salaires_val if salaires_auto else data.salaires
 
-    # ── 3. Valeur du stock (hors périmés) ─────────────
+    # ── 3. Valeur du stock (hors périmés, prix promo depuis API) ──
+    # promos_map = {produit_id: prix_promo} depuis /promotions/actives
+    # Plus fiable que le flag en_promotion sur le produit
     nb_actifs  = 0
     nb_exclus  = 0
     val_normal = 0.0
@@ -938,9 +995,12 @@ async def calculer_profit_perte(
         produit    = s.get("produit") or {}
         quantite   = float(s.get("quantite", 0))
         date_exp   = produit.get("date_expiration")
-        en_promo   = produit.get("en_promotion", False)
+        pid        = s.get("produit_id")
         prix_unit  = float(produit.get("prix_unitaire") or 0)
-        prix_promo = float(produit.get("prix_promo") or 0)
+        # Prix promo : priorité à l'API promotions/actives, fallback sur le produit
+        prix_promo_api = promos_map.get(pid, 0)
+        prix_promo_pdt = float(produit.get("prix_promo") or 0) if produit.get("en_promotion") else 0
+        prix_promo = prix_promo_api or prix_promo_pdt
 
         if date_exp:
             try:
@@ -951,20 +1011,46 @@ async def calculer_profit_perte(
                 pass
 
         nb_actifs += 1
-        if en_promo and prix_promo > 0:
+        if prix_promo > 0:
             val_promo += prix_promo * quantite
         else:
             val_normal += prix_unit * quantite
 
     valeur_stock = round(val_normal + val_promo, 2)
 
-    # ── 4. Totaux ─────────────────────────────────────
+    # ── 4. CA réel = Σ(sorties × prix de vente) ───────
+    # Utilise promos_map pour les prix promo (source directe = API promotions/actives)
+    prix_par_produit: dict = {}
+    for s in stocks:
+        p   = s.get("produit") or {}
+        pid = s.get("produit_id")
+        prix_unit  = float(p.get("prix_unitaire") or 0)
+        prix_promo = promos_map.get(pid) or (float(p.get("prix_promo") or 0) if p.get("en_promotion") else 0)
+        prix_par_produit[pid] = {
+            "prix":      prix_unit,
+            "prix_vente": prix_promo if prix_promo > 0 else prix_unit,
+        }
+
+    chiffre_affaires = 0.0
+    mouvements_sorties = [m for m in mouvements_all if m.get("type_mouvement") in ("sortie", "SORTIE")]
+    for m in mouvements_sorties:
+        pid = m.get("produit_id")
+        qte = float(m.get("quantite", 0))
+        info = prix_par_produit.get(pid, {})
+        chiffre_affaires += qte * info.get("prix_vente", 0)
+    chiffre_affaires = round(chiffre_affaires, 2)
+
+    # ── 5. Totaux ─────────────────────────────────────
     total_depenses = round(
         data.eau + data.electricite + data.autres
         + montant_pertes + montant_salaires,
         2,
     )
-    profit = round(valeur_stock - total_depenses, 2)
+    # Profit = CA réel - charges (si CA > 0), sinon fallback sur valeur stock
+    base_calcul = chiffre_affaires if chiffre_affaires > 0 else valeur_stock
+    profit      = round(base_calcul - total_depenses, 2)
+    marge_brute = round(base_calcul - total_depenses, 2)
+    taux_marge  = round((marge_brute / base_calcul * 100), 2) if base_calcul > 0 else 0.0
     statut = "benefice" if profit > 0 else ("perte" if profit < 0 else "equilibre")
 
     # ── 5. Analyse IA ─────────────────────────────────
@@ -989,6 +1075,7 @@ async def calculer_profit_perte(
         depense_autres          = data.autres,
         total_depenses          = total_depenses,
         valeur_stock            = valeur_stock,
+        chiffre_affaires        = chiffre_affaires,
         profit                  = profit,
         statut                  = statut,
         analyse_ia              = json.dumps(analyse_ia.model_dump()) if analyse_ia else None,
@@ -1001,10 +1088,13 @@ async def calculer_profit_perte(
 
     # ── 7. Construire la réponse ───────────────────────
     return ProfitPerteResponse(
-        total_depenses  = total_depenses,
-        valeur_stock    = valeur_stock,
-        profit          = profit,
-        statut          = statut,
+        chiffre_affaires = chiffre_affaires,
+        marge_brute      = marge_brute,
+        taux_marge       = taux_marge,
+        total_depenses   = total_depenses,
+        valeur_stock     = valeur_stock,
+        profit           = profit,
+        statut           = statut,
         detail_depenses = DetailDepenses(
             eau                  = data.eau,
             electricite          = data.electricite,

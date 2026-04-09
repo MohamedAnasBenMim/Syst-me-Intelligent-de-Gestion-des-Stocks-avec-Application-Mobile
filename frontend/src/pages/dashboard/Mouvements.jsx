@@ -140,7 +140,11 @@ function CreateModal({ onClose, onCreated }) {
                     <select value={form.produit_id} onChange={e => set('produit_id', e.target.value)}>
                       <option value="">Sélectionner…</option>
                       {produits.map(p => (
-                        <option key={p.id} value={p.id}>{p.nom || p.name || `Produit #${p.id}`}</option>
+                        <option key={p.id} value={p.id}>
+                          {p.designation
+                            ? `${p.reference ? `[${p.reference}] ` : ''}${p.designation}`
+                            : `Produit #${p.id}`}
+                        </option>
                       ))}
                     </select>
                   </div>

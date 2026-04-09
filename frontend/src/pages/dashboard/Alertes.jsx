@@ -19,13 +19,24 @@ function fmtDate(dateStr) {
 }
 
 const NIVEAU_CFG = {
-  rupture:  { badgeClass: 'badge-solid-red',    label: 'Rupture'  },
-  critique: { badgeClass: 'badge-solid-orange',  label: 'Critique' },
-  surstock: { badgeClass: 'badge-solid-teal',    label: 'Surstock' },
-  normal:   { badgeClass: 'badge-green',         label: 'Normal'   },
+  RUPTURE:          { badgeClass: 'badge-solid-red',    label: 'Rupture'          },
+  CRITIQUE:         { badgeClass: 'badge-solid-orange', label: 'Critique'         },
+  SURSTOCK:         { badgeClass: 'badge-solid-teal',   label: 'Surstock'         },
+  NORMAL:           { badgeClass: 'badge-green',        label: 'Normal'           },
+  EXPIRATION_PROCHE:{ badgeClass: 'badge-solid-purple', label: 'Expiration proche'},
+  // fallback minuscules
+  rupture:          { badgeClass: 'badge-solid-red',    label: 'Rupture'  },
+  critique:         { badgeClass: 'badge-solid-orange', label: 'Critique' },
+  surstock:         { badgeClass: 'badge-solid-teal',   label: 'Surstock' },
+  normal:           { badgeClass: 'badge-green',        label: 'Normal'   },
 }
 
 const STATUT_CFG = {
+  ACTIVE:  { badgeClass: 'badge-red',    label: 'Active'  },
+  TRAITEE: { badgeClass: 'badge-orange', label: 'Traitée' },
+  RESOLUE: { badgeClass: 'badge-green',  label: 'Résolue' },
+  IGNOREE: { badgeClass: 'badge-gray',   label: 'Ignorée' },
+  // fallback minuscules
   active:  { badgeClass: 'badge-red',    label: 'Active'  },
   traitee: { badgeClass: 'badge-orange', label: 'Traitée' },
   resolue: { badgeClass: 'badge-green',  label: 'Résolue' },
@@ -55,7 +66,7 @@ export default function Alertes() {
   const [loading,       setLoading]       = useState(true)
   const [error,         setError]         = useState(null)
   const [filterNiveau,  setFilterNiveau]  = useState('')
-  const [filterStatut,  setFilterStatut]  = useState('active')
+  const [filterStatut,  setFilterStatut]  = useState('')
   const [page,          setPage]          = useState(1)
   const [total,         setTotal]         = useState(0)
   const [updating,      setUpdating]      = useState(null)
@@ -169,10 +180,11 @@ export default function Alertes() {
             onChange={e => { setFilterNiveau(e.target.value); setPage(1) }}
           >
             <option value="">Tous</option>
-            <option value="normal">Normal</option>
-            <option value="critique">Critique</option>
-            <option value="rupture">Rupture</option>
-            <option value="surstock">Surstock</option>
+            <option value="NORMAL">Normal</option>
+            <option value="CRITIQUE">Critique</option>
+            <option value="RUPTURE">Rupture</option>
+            <option value="SURSTOCK">Surstock</option>
+            <option value="EXPIRATION_PROCHE">Expiration proche</option>
           </select>
           <div className="toolbar-sep" />
           <span style={{ fontSize: 12, fontWeight: 600, color: '#6B7280' }}>Statut :</span>
@@ -181,10 +193,10 @@ export default function Alertes() {
             onChange={e => { setFilterStatut(e.target.value); setPage(1) }}
           >
             <option value="">Tous</option>
-            <option value="active">Active</option>
-            <option value="traitee">Traitée</option>
-            <option value="resolue">Résolue</option>
-            <option value="ignoree">Ignorée</option>
+            <option value="ACTIVE">Active</option>
+            <option value="TRAITEE">Traitée</option>
+            <option value="RESOLUE">Résolue</option>
+            <option value="IGNOREE">Ignorée</option>
           </select>
         </div>
 
@@ -253,13 +265,13 @@ export default function Alertes() {
                         {isManager && (
                           <td>
                             <div className="td-acts">
-                              {a.statut === 'active' && (
+                              {(a.statut === 'active' || a.statut === 'ACTIVE') && (
                                 <>
                                   <button
                                     className="act-btn edit"
                                     title="Traiter"
                                     disabled={isUpdating}
-                                    onClick={() => handleAction(a, 'traitee')}
+                                    onClick={() => handleAction(a, 'TRAITEE')}
                                     style={{ width: 'auto', padding: '4px 10px', fontSize: 11, fontWeight: 600 }}
                                   >
                                     {isUpdating ? <Loader size={11} className="spin" /> : 'Traiter'}
@@ -268,19 +280,19 @@ export default function Alertes() {
                                     className="act-btn"
                                     title="Ignorer"
                                     disabled={isUpdating}
-                                    onClick={() => handleAction(a, 'ignoree')}
+                                    onClick={() => handleAction(a, 'IGNOREE')}
                                     style={{ width: 'auto', padding: '4px 10px', fontSize: 11, fontWeight: 600, color: '#6B7280' }}
                                   >
                                     Ignorer
                                   </button>
                                 </>
                               )}
-                              {a.statut === 'traitee' && (
+                              {(a.statut === 'traitee' || a.statut === 'TRAITEE') && (
                                 <button
                                   className="act-btn"
                                   title="Résoudre"
                                   disabled={isUpdating}
-                                  onClick={() => handleAction(a, 'resolue')}
+                                  onClick={() => handleAction(a, 'RESOLUE')}
                                   style={{ width: 'auto', padding: '4px 10px', fontSize: 11, fontWeight: 600, color: '#28A745', borderColor: '#28A745' }}
                                 >
                                   {isUpdating ? <Loader size={11} className="spin" /> : 'Résoudre'}

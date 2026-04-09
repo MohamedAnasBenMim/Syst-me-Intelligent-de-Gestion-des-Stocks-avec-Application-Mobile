@@ -51,16 +51,22 @@ async def generer_recommandation_ia(alerte: Alerte, token: str):
         contexte = alerte.message
 
     try:
+        # Extraire date_expiration (YYYY-MM-DD) depuis le message de l'alerte
+        import re as _re
+        date_exp_match = _re.search(r'(\d{4}-\d{2}-\d{2})', alerte.message or '')
+        date_expiration = date_exp_match.group(1) if date_exp_match else None
+
         async with httpx.AsyncClient(timeout=5.0) as client:
             await client.post(
                 f"{settings.IA_RAG_SERVICE_URL}/api/v1/ia/recommandation",
                 json={
-                    "produit_id":  alerte.produit_id,
-                    "entrepot_id": alerte.entrepot_id,
-                    "alerte_id":   alerte.id,
-                    "stock_actuel": alerte.quantite_actuelle,
-                    "seuil_min":   alerte.seuil_alerte_min,
-                    "contexte_supplementaire": contexte
+                    "produit_id":              alerte.produit_id,
+                    "entrepot_id":             alerte.entrepot_id,
+                    "alerte_id":               alerte.id,
+                    "stock_actuel":            alerte.quantite_actuelle,
+                    "seuil_min":               alerte.seuil_alerte_min,
+                    "contexte_supplementaire": contexte,
+                    "date_expiration":         date_expiration,
                 },
                 headers={"Authorization": f"Bearer {token}"},
             )
@@ -87,27 +93,77 @@ async def get_user_email(user_id: int, token: str) -> tuple[str | None, str | No
     return None, None
 
 
+async def obtenir_recommandation_reappro_ia(alerte: Alerte, token: str) -> str | None:
+    """
+    Appelle Service IA-RAG pour obtenir une recommandation de réapprovisionnement
+    pour les alertes CRITIQUE et RUPTURE. Retourne le texte de recommandation
+    (ex: "Commandez 50 unités") ou None si l'IA n'est pas disponible.
+    """
+    if alerte.niveau not in (NiveauAlerte.CRITIQUE, NiveauAlerte.RUPTURE):
+        return None
+    try:
+        contexte = (
+            f"Stock critique : {alerte.quantite_actuelle} unités disponibles — "
+            f"Seuil minimum : {alerte.seuil_alerte_min}. "
+            "Indiquez précisément le nombre d'unités à commander pour réapprovisionner le stock."
+        )
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.post(
+                f"{settings.IA_RAG_SERVICE_URL}/api/v1/ia/recommandation",
+                json={
+                    "produit_id":              alerte.produit_id,
+                    "entrepot_id":             alerte.entrepot_id,
+                    "alerte_id":               alerte.id,
+                    "stock_actuel":            alerte.quantite_actuelle,
+                    "seuil_min":               alerte.seuil_alerte_min,
+                    "contexte_supplementaire": contexte,
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        if r.status_code == 200:
+            data = r.json()
+            texte = data.get("recommandation_texte") or ""
+            qte   = data.get("quantite_recommandee")
+            if qte and texte:
+                return f"Commandez environ {qte} unités — {texte}"
+            elif qte:
+                return f"Commandez environ {qte} unités pour réapprovisionner le stock."
+            return texte or None
+    except Exception:
+        pass
+    return None
+
+
 async def notifier_responsables(alerte: Alerte, token: str):
     """
     Appelle Service Notification pour envoyer
     email/push aux responsables concernés.
+    Pour les alertes CRITIQUE/RUPTURE, inclut une recommandation IA de réapprovisionnement.
     Ne bloque pas si Service Notification ne répond pas.
     """
+    # Obtenir recommandation IA pour les alertes critiques (avec timeout)
+    recommandation_ia = await obtenir_recommandation_reappro_ia(alerte, token)
+
+    payload = {
+        "type"       : "alerte_stock",
+        "niveau"     : alerte.niveau,
+        "produit_id" : alerte.produit_id,
+        "produit_nom": alerte.produit_nom,
+        "entrepot_id": alerte.entrepot_id,
+        "entrepot_nom": alerte.entrepot_nom,
+        "quantite"   : alerte.quantite_actuelle,
+        "message"    : alerte.message,
+        "alerte_id"  : alerte.id,
+        # Pas de destinataire_email → service-notification utilise SMTP_USER
+    }
+    if recommandation_ia:
+        payload["recommandation_ia"] = recommandation_ia
+
     try:
         async with httpx.AsyncClient() as client:
             await client.post(
                 f"{settings.NOTIFICATION_SERVICE_URL}/api/v1/notifications/envoyer",
-                json={
-                    "type"           : "alerte_stock",
-                    "niveau"         : alerte.niveau,
-                    "produit_id"     : alerte.produit_id,
-                    "produit_nom"    : alerte.produit_nom,
-                    "entrepot_id"    : alerte.entrepot_id,
-                    "entrepot_nom"   : alerte.entrepot_nom,
-                    "quantite"       : alerte.quantite_actuelle,
-                    "message"        : alerte.message,
-                    "alerte_id"      : alerte.id
-                },
+                json=payload,
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=5.0
             )
@@ -161,19 +217,48 @@ async def declencher_alerte(
             created_at           = datetime.now()
         )
 
-    # ── Vérifier si une alerte identique est déjà active ──
+    # ── Vérifier si une alerte de STOCK (pas anomalie) est déjà active ──
+    # On exclut les alertes d'anomalie pour ne pas bloquer la création
+    # d'une nouvelle alerte critique lorsqu'une vieille alerte anomalie existe
     alerte_existante = db.query(Alerte).filter(
         Alerte.produit_id  == data.produit_id,
         Alerte.entrepot_id == data.entrepot_id,
         Alerte.niveau      == data.niveau,
-        Alerte.statut      == StatutAlerte.ACTIVE
+        Alerte.statut      == StatutAlerte.ACTIVE,
+        ~Alerte.message.contains("ANOMALIE"),
     ).first()
 
     if alerte_existante:
-        # Mettre à jour la quantité actuelle
-        alerte_existante.quantite_actuelle = data.quantite_actuelle
-        db.commit()
-        db.refresh(alerte_existante)
+        # Si le stock a encore baissé → nouvelle notification + mise à jour message
+        if (data.quantite_actuelle is not None and
+                alerte_existante.quantite_actuelle is not None and
+                data.quantite_actuelle < alerte_existante.quantite_actuelle):
+
+            alerte_existante.quantite_actuelle = data.quantite_actuelle
+            # Mettre à jour le message avec la nouvelle quantité
+            if data.niveau == NiveauAlerte.CRITIQUE:
+                alerte_existante.message = (
+                    f"⚠️ Stock CRITIQUE — {data.produit_nom or data.produit_id} dans "
+                    f"{data.entrepot_nom or data.entrepot_id} — "
+                    f"quantité = {data.quantite_actuelle} (min: {data.seuil_alerte_min})"
+                )
+            elif data.niveau == NiveauAlerte.RUPTURE:
+                alerte_existante.message = (
+                    f"🚨 RUPTURE de stock — {data.produit_nom or data.produit_id} dans "
+                    f"{data.entrepot_nom or data.entrepot_id} — quantité = 0"
+                )
+            db.commit()
+            db.refresh(alerte_existante)
+
+            # Renvoyer une notification avec la nouvelle quantité
+            await notifier_responsables(alerte_existante, token)
+            await generer_recommandation_ia(alerte_existante, token)
+        else:
+            # Quantité identique ou supérieure → juste mettre à jour silencieusement
+            alerte_existante.quantite_actuelle = data.quantite_actuelle
+            db.commit()
+            db.refresh(alerte_existante)
+
         return alerte_existante
 
     # ── Générer le message selon le niveau ─────────────────
@@ -212,6 +297,114 @@ async def declencher_alerte(
     await generer_recommandation_ia(nouvelle_alerte, token)
 
     return nouvelle_alerte
+
+
+@router.post(
+    "/alertes/verifier-stocks",
+    summary="Scanner tous les stocks et déclencher les alertes critique/rupture/surstock",
+    description="Parcourt tous les stocks, compare aux seuils et déclenche les alertes manquantes."
+)
+async def verifier_stocks_critiques(
+    db          : Session                      = Depends(get_db),
+    current_user: dict                         = Depends(get_current_gestionnaire_or_admin),
+    credentials : HTTPAuthorizationCredentials = Depends(security),
+):
+    token = credentials.credentials
+    alertes_declenchees = 0
+
+    # 1. Récupérer tous les stocks depuis service-stock
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/stocks",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            stocks = r.json() if r.status_code == 200 else []
+    except Exception as e:
+        return {"success": False, "message": str(e), "alertes_declenchees": 0}
+
+    if not isinstance(stocks, list):
+        return {"success": False, "message": "Réponse inattendue du service stock", "alertes_declenchees": 0}
+
+    for stock in stocks:
+        produit_id   = stock.get("produit_id")
+        entrepot_id  = stock.get("entrepot_id")
+        quantite     = float(stock.get("quantite") or 0)
+        produit_data = stock.get("produit") or {}
+
+        seuil_min = float(produit_data.get("seuil_alerte_min") or 0)
+        seuil_max = float(produit_data.get("seuil_alerte_max") or 999999)
+        produit_nom = produit_data.get("designation") or f"Produit {produit_id}"
+
+        # Calculer le niveau
+        if quantite == 0:
+            niveau = NiveauAlerte.RUPTURE
+        elif quantite <= seuil_min:
+            niveau = NiveauAlerte.CRITIQUE
+        elif quantite > seuil_max:
+            niveau = NiveauAlerte.SURSTOCK
+        else:
+            continue  # stock normal → pas d'alerte
+
+        # Vérifier qu'une alerte identique n'est pas déjà active
+        existante = db.query(Alerte).filter(
+            Alerte.produit_id  == produit_id,
+            Alerte.entrepot_id == entrepot_id,
+            Alerte.niveau      == niveau,
+            Alerte.statut      == StatutAlerte.ACTIVE,
+            ~Alerte.message.contains("ANOMALIE"),
+        ).first()
+        if existante:
+            continue
+
+        # Récupérer nom entrepôt
+        entrepot_nom = f"Entrepôt {entrepot_id}"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                rw = await client.get(
+                    f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/entrepots/{entrepot_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if rw.status_code == 200:
+                    entrepot_nom = rw.json().get("nom", entrepot_nom)
+        except Exception:
+            pass
+
+        messages = {
+            NiveauAlerte.RUPTURE : f"🚨 RUPTURE de stock — {produit_nom} dans {entrepot_nom} — quantité = 0",
+            NiveauAlerte.CRITIQUE: f"⚠️ Stock CRITIQUE — {produit_nom} dans {entrepot_nom} — quantité = {quantite} (seuil min: {seuil_min})",
+            NiveauAlerte.SURSTOCK: f"📦 SURSTOCK — {produit_nom} dans {entrepot_nom} — quantité = {quantite} (seuil max: {seuil_max})",
+        }
+
+        nouvelle_alerte = Alerte(
+            niveau             = niveau,
+            statut             = StatutAlerte.ACTIVE,
+            produit_id         = produit_id,
+            produit_nom        = produit_nom,
+            entrepot_id        = entrepot_id,
+            entrepot_nom       = entrepot_nom,
+            quantite_actuelle  = quantite,
+            seuil_alerte_min   = seuil_min,
+            seuil_alerte_max   = seuil_max,
+            message            = messages[niveau],
+            notification_envoyee = False,
+        )
+        db.add(nouvelle_alerte)
+        db.commit()
+        db.refresh(nouvelle_alerte)
+
+        await notifier_responsables(nouvelle_alerte, token)
+        nouvelle_alerte.notification_envoyee = True
+        db.commit()
+
+        await generer_recommandation_ia(nouvelle_alerte, token)
+        alertes_declenchees += 1
+
+    return {
+        "success": True,
+        "message": f"{alertes_declenchees} nouvelle(s) alerte(s) déclenchée(s)",
+        "alertes_declenchees": alertes_declenchees,
+    }
 
 
 @router.post(
@@ -277,7 +470,7 @@ async def verifier_expirations_stock(
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 rs = await client.get(
-                    f"{settings.STOCK_SERVICE_URL}/api/v1/stocks/produit/{produit_id}",
+                    f"{settings.STOCK_SERVICE_URL}/api/v1/stocks?produit_id={produit_id}",
                     headers={"Authorization": f"Bearer {token}"},
                 )
                 stocks = rs.json() if rs.status_code == 200 else []
@@ -376,9 +569,9 @@ async def lister_alertes(
     query = db.query(Alerte)
 
     if niveau:
-        query = query.filter(Alerte.niveau == niveau)
+        query = query.filter(Alerte.niveau == niveau.upper())
     if statut:
-        query = query.filter(Alerte.statut == statut)
+        query = query.filter(Alerte.statut == statut.upper())
     if produit_id:
         query = query.filter(Alerte.produit_id == produit_id)
     if entrepot_id:

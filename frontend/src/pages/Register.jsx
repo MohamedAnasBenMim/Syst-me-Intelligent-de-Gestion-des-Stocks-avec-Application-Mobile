@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { Mail, Eye, EyeOff, Building2, User, ChevronDown, Check } from 'lucide-react'
+import { Mail, Eye, EyeOff, Building2, User, ChevronDown, Check, Camera } from 'lucide-react'
 import { register as apiRegister } from '../services/api'
+import logoImg from '../assets/becarthai-logo.jpg'
 import './Register.css'
 
 /* ── force du mot de passe ── */
@@ -19,7 +20,7 @@ const strengthColor = ['', '#DC3545', '#FFC107', '#0694A2', '#28A745']
 export default function Register() {
   const [form, setForm] = useState({
     prenom: '', nom: '', email: '', password: '', confirm: '',
-    role: '', entreprise: '', terms: false,
+    role: '', entreprise: '', matricule: '', terms: false,
   })
   const [showPw,    setShowPw]    = useState(false)
   const [showCf,    setShowCf]    = useState(false)
@@ -27,6 +28,9 @@ export default function Register() {
   const [loading,   setLoading]   = useState(false)
   const [apiError,  setApiError]  = useState('')
   const [submitted, setSubmitted] = useState(false)
+  const [photoPreview, setPhotoPreview] = useState(null)
+  const photoBase64 = useRef(null)
+  const fileInputRef = useRef(null)
 
   const strength = getStrength(form.password)
 
@@ -34,6 +38,17 @@ export default function Register() {
     const { name, value, type, checked } = e.target
     setForm(f => ({ ...f, [name]: type === 'checkbox' ? checked : value }))
     setErrors(err => ({ ...err, [name]: '' }))
+  }
+
+  const handlePhotoChange = e => {
+    const file = e.target.files[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = ev => {
+      photoBase64.current = ev.target.result
+      setPhotoPreview(ev.target.result)
+    }
+    reader.readAsDataURL(file)
   }
 
   const validate = () => {
@@ -64,6 +79,10 @@ export default function Register() {
         password: form.password,
         role:     form.role,
       })
+      // Sauvegarder la photo de profil localement
+      if (photoBase64.current) {
+        localStorage.setItem(`sgs_avatar_${form.email.toLowerCase()}`, photoBase64.current)
+      }
       setSubmitted(true)
     } catch (err) {
       setApiError(err.message)
@@ -154,11 +173,7 @@ export default function Register() {
           {/* Logo */}
           <div className="rl-logo-top">
             <div className="rl-logo-icon">
-              <svg width="18" height="18" viewBox="0 0 36 36" fill="none">
-                <polygon points="6,16 18,7 30,16" fill="white" opacity="0.95"/>
-                <rect x="8" y="16" width="20" height="13" rx="1.5" fill="white" opacity="0.85"/>
-                <rect x="15" y="21" width="6" height="8" rx="1" fill="#5784BA"/>
-              </svg>
+              <img src={logoImg} alt="BecarthAI" style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 8, display: 'block' }} />
             </div>
             <span className="rl-logo-text">SGS <strong>SaaS</strong></span>
           </div>
@@ -169,6 +184,23 @@ export default function Register() {
           </div>
 
           <form onSubmit={handleSubmit} noValidate>
+
+            {/* Photo de profil */}
+            <div className="photo-upload-wrap">
+              <button type="button" className="photo-upload-btn" onClick={() => fileInputRef.current?.click()}>
+                {photoPreview
+                  ? <img src={photoPreview} alt="Aperçu" className="photo-preview" />
+                  : <div className="photo-placeholder"><Camera size={20} color="#9AC8EB" /></div>
+                }
+                <span className="photo-upload-label">Photo de profil</span>
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file" accept="image/*"
+                style={{ display: 'none' }}
+                onChange={handlePhotoChange}
+              />
+            </div>
 
             {/* Prénom + Nom */}
             <div className="form-row">
@@ -246,22 +278,24 @@ export default function Register() {
               {errors.confirm && <span className="form-error">{errors.confirm}</span>}
             </div>
 
-            {/* Rôle + Entreprise */}
-            <div className="form-row">
-              <div className="form-group">
-                <label>Rôle</label>
-                <div className="input-wrap select-wrap">
-                  <select name="role" value={form.role} onChange={update}
-                    className={errors.role ? 'error' : ''}>
-                    <option value="">Votre rôle</option>
-                    <option value="admin">Admin</option>
-                    <option value="gestionnaire">Gestionnaire</option>
-                    <option value="operateur">Opérateur</option>
-                  </select>
-                  <ChevronDown size={14} className="select-arrow" />
-                </div>
-                {errors.role && <span className="form-error">{errors.role}</span>}
+            {/* Rôle */}
+            <div className="form-group">
+              <label>Rôle</label>
+              <div className="input-wrap select-wrap">
+                <select name="role" value={form.role} onChange={update}
+                  className={errors.role ? 'error' : ''}>
+                  <option value="">Votre rôle</option>
+                  <option value="admin">Admin</option>
+                  <option value="gestionnaire">Gestionnaire</option>
+                  <option value="operateur">Opérateur</option>
+                </select>
+                <ChevronDown size={14} className="select-arrow" />
               </div>
+              {errors.role && <span className="form-error">{errors.role}</span>}
+            </div>
+
+            {/* Entreprise + Matricule */}
+            <div className="form-row">
               <div className="form-group">
                 <label>Entreprise</label>
                 <div className="input-wrap">
@@ -271,6 +305,13 @@ export default function Register() {
                     className={errors.entreprise ? 'error' : ''} />
                 </div>
                 {errors.entreprise && <span className="form-error">{errors.entreprise}</span>}
+              </div>
+              <div className="form-group">
+                <label>Matricule</label>
+                <div className="input-wrap">
+                  <input name="matricule" placeholder="Ex: MAT-0042"
+                    value={form.matricule} onChange={update} />
+                </div>
               </div>
             </div>
 

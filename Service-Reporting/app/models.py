@@ -89,6 +89,7 @@ class CalculProfitPerte(Base):
     # Résultats calculés automatiquement
     total_depenses    = Column(Float, nullable=False)
     valeur_stock      = Column(Float, nullable=False)
+    chiffre_affaires  = Column(Float, nullable=True, default=0.0)  # CA réel depuis sorties
     profit            = Column(Float, nullable=False)   # peut être négatif
     statut            = Column(String(20), nullable=False)  # benefice / perte / equilibre
 

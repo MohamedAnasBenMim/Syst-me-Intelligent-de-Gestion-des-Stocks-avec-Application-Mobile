@@ -2,26 +2,30 @@
 .register-layout {
   min-height: 100vh;
   display: flex;
-  background: #eef4fb;
+  background: linear-gradient(145deg, #3a5f96 0%, #5784BA 50%, #7aa3cc 100%);
   font-family: 'Inter', sans-serif;
 }
 
 /* ══════════════════════════════════
-   GAUCHE — Formulaire (blanc)
+   GAUCHE — Formulaire (carte blanche)
 ══════════════════════════════════ */
 .register-right {
   order: 1;
   flex: 0 0 50%;
-  background: #fff;
+  background: transparent;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 40px 56px;
+  padding: 40px 40px;
 }
 
 .register-card {
   width: 100%;
-  max-width: 440px;
+  max-width: 460px;
+  background: #fff;
+  border-radius: 20px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+  padding: 36px 40px 28px;
 }
 
 /* Logo */
@@ -31,11 +35,41 @@
 }
 .rl-logo-icon {
   width: 34px; height: 34px; border-radius: 9px;
-  background: linear-gradient(135deg, #5784BA, #9AC8EB);
+  background: transparent;
   display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
 }
 .rl-logo-text { font-size: 16px; font-weight: 800; color: #1e293b; letter-spacing: -0.01em; }
 .rl-logo-text strong { color: #5784BA; }
+
+/* Photo upload */
+.photo-upload-wrap {
+  display: flex; align-items: center; gap: 14px;
+  margin-bottom: 20px;
+}
+.photo-upload-btn {
+  display: flex; align-items: center; gap: 10px;
+  background: none; border: none; cursor: pointer; padding: 0;
+}
+.photo-placeholder {
+  width: 52px; height: 52px; border-radius: 50%;
+  border: 2px dashed #9AC8EB;
+  background: #EFF6FF;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  transition: border-color 0.2s;
+}
+.photo-upload-btn:hover .photo-placeholder { border-color: #5784BA; }
+.photo-preview {
+  width: 52px; height: 52px; border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid #5784BA;
+  flex-shrink: 0;
+}
+.photo-upload-label {
+  font-size: 13px; font-weight: 600; color: #5784BA;
+  text-decoration: underline; cursor: pointer;
+}
 
 /* Header */
 .rc-header { margin-bottom: 24px; }
@@ -152,7 +186,7 @@
 .register-success {
   min-height: 100vh; display: flex;
   align-items: center; justify-content: center;
-  background: #eef4fb;
+  background: linear-gradient(145deg, #3a5f96 0%, #5784BA 50%, #7aa3cc 100%);
 }
 .success-box {
   background: #fff; border-radius: 20px;
@@ -170,12 +204,12 @@
 .success-box p  { font-size: 14px; color: #64748b; margin-bottom: 28px; line-height: 1.6; }
 
 /* ══════════════════════════════════
-   DROITE — Illustration (bleu)
+   DROITE — Illustration (transparente sur fond bleu)
 ══════════════════════════════════ */
 .register-left {
   order: 2;
   flex: 1;
-  background: linear-gradient(145deg, #4a6fa8 0%, #5784BA 50%, #7aa3cc 100%);
+  background: transparent;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -273,6 +307,7 @@
 /* ── Responsive ── */
 @media (max-width: 960px) {
   .register-layout { flex-direction: column; }
-  .register-right { order: 1; flex: none; width: 100%; padding: 32px 20px; }
+  .register-right { order: 1; flex: none; width: 100%; padding: 24px 16px; }
+  .register-card  { padding: 28px 24px 24px; }
   .register-left  { order: 2; flex: none; width: 100%; min-height: 240px; }
 }

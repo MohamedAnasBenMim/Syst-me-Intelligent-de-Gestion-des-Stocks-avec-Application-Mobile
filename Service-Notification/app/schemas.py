@@ -29,6 +29,8 @@ class NotificationEnvoyer(BaseModel):
     # Destinataire spécifique (ex: utilisateur qui a fait le mouvement)
     destinataire_email: Optional[str]    = None
     destinataire_nom  : Optional[str]    = None
+    # Recommandation IA incluse dans le corps de l'email (reappro ou promotion)
+    recommandation_ia : Optional[str]    = None
 
 
 # ═══════════════════════════════════════════════════════════

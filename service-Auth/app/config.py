@@ -30,6 +30,18 @@ class AuthSettings(BaseSettings):
     ADMIN_EMAIL:    str = "admin@sgs.tn"
     ADMIN_PASSWORD: str = "123456"
 
+    # ── Configuration Email SMTP ───────────────────────────
+    SMTP_HOST:     str = Field(default="smtp.gmail.com")
+    SMTP_PORT:     int = Field(default=587)
+    SMTP_USER:     str = Field(default="")
+    SMTP_PASSWORD: str = Field(default="")
+
+    # ── Clerk Backend Secret Key ───────────────────────────
+    CLERK_SECRET_KEY: str = Field(default="")
+
+    # ── Frontend URL (pour les liens de reset) ─────────────
+    FRONTEND_URL: str = Field(default="http://localhost:5173")
+
     # ── URLs des autres services ───────────────────────────
     STOCK_SERVICE_URL:        str = "http://localhost:8003"
     WAREHOUSE_SERVICE_URL:    str = "http://localhost:8002"

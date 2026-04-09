@@ -38,6 +38,7 @@ class RecommandationRequest(BaseModel):
     stock_actuel:            Optional[float] = None
     seuil_min:               Optional[float] = None
     contexte_supplementaire: Optional[str]   = None
+    date_expiration:         Optional[str]   = None   # YYYY-MM-DD — pour calcul côté frontend
 
 
 class RecommandationResponse(BaseModel):
@@ -143,11 +144,12 @@ class PrevisionProduit(BaseModel):
     entrepot_nom:         str
     stock_actuel:         float
     seuil_min:            float
-    consommation_par_jour: float          # moyenne sur 30 jours
-    jours_avant_rupture:  float           # stock_actuel / conso_jour
+    consommation_par_jour: float          # moyenne sur 30 jours (0 = aucune sortie)
+    jours_avant_rupture:  float           # stock_actuel / conso_jour (9999 = stable)
     quantite_a_commander: float           # conso * 30 jours
-    urgence:              str             # critique / haute / moyenne / basse
+    urgence:              str             # critique / haute / moyenne / basse / stable
     tendance:             str             # hausse / baisse / stable
+    recommandation:       Optional[str] = None  # conseil affiché à l'utilisateur
 
 
 class PrevisionResponse(BaseModel):

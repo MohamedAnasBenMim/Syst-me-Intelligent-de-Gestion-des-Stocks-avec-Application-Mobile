@@ -1,12 +1,15 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import {
   Layers, ArrowLeftRight, Bell, Mail, RefreshCw,
-  BarChart2, Settings, LogOut, Brain, Package,
+  BarChart2, Settings, LogOut, Brain,
   Warehouse, ShoppingCart, Users, Search, ChevronDown, Tag,
+  AlertTriangle, X, Package,
 } from 'lucide-react'
+import logoImg from '../assets/becarthai-logo.jpg'
 import { useAuth } from '../context/AuthContext'
-import { getIaStats, getAlertes } from '../services/api'
+import { useClerk } from '@clerk/react'
+import { getIaStats, getAlertes, getNotifications, verifierExpirations, verifierStocks } from '../services/api'
 import './DashboardLayout.css'
 
 const navItems = [
@@ -41,28 +44,104 @@ const PAGE_TITLES = {
 }
 
 export default function DashboardLayout({ children }) {
-  const { user, logout } = useAuth()
+  const { user, logout, avatar } = useAuth()
+  const { signOut: clerkSignOut } = useClerk()
   const navigate    = useNavigate()
   const location    = useLocation()
-  const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [iaStatus,    setIaStatus]    = useState(null)
-  const [alertCount,  setAlertCount]  = useState(0)
-  const [notifCount] = useState(0)
-  const [search,      setSearch]      = useState('')
+  const [sidebarOpen,  setSidebarOpen]  = useState(false)
+  const [iaStatus,     setIaStatus]     = useState(null)
+  const [alertCount,   setAlertCount]   = useState(0)
+  const [notifCount,   setNotifCount]   = useState(0)
+  const [search,       setSearch]       = useState('')
   const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const [toasts,       setToasts]       = useState([])   // notifications in-app
+  const prevAlertCount = useRef(null)
+  const pushGranted    = useRef(false)
+
+  // ── Demander permission notifications navigateur ─────────
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().then(p => {
+        pushGranted.current = p === 'granted'
+      })
+    } else if ('Notification' in window) {
+      pushGranted.current = Notification.permission === 'granted'
+    }
+  }, [])
+
+  // ── Afficher une notification navigateur ─────────────────
+  const pushBrowserNotif = useCallback((titre, corps) => {
+    if (pushGranted.current && 'Notification' in window) {
+      try {
+        new Notification(titre, {
+          body: corps,
+          icon: '/favicon.ico',
+          badge: '/favicon.ico',
+          tag: 'sgs-alerte',
+          renotify: true,
+        })
+      } catch (_) {}
+    }
+  }, [])
+
+  // ── Ajouter un toast in-app ───────────────────────────────
+  const addToast = useCallback((message, niveau = 'critique') => {
+    const id = Date.now()
+    setToasts(prev => [...prev.slice(-3), { id, message, niveau }])
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 8000)
+  }, [])
+
+  // ── Polling notifications (toutes les 60 secondes) ───────
+  const fetchNotifCount = useCallback(async () => {
+    try {
+      const data = await getNotifications({ per_page: 1 })
+      setNotifCount(data?.total ?? 0)
+    } catch (_) {}
+  }, [])
+
+  // ── Polling alertes actives (toutes les 30 secondes) ─────
+  const fetchAlertCount = useCallback(async () => {
+    try {
+      const data = await getAlertes({ statut: 'ACTIVE', per_page: 1 })
+      const count = data?.total ?? data?.alertes?.length ?? 0
+      setAlertCount(count)
+
+      // Notifier si de nouvelles alertes sont apparues
+      if (prevAlertCount.current !== null && count > prevAlertCount.current) {
+        const diff = count - prevAlertCount.current
+        const msg  = `${diff} nouvelle(s) alerte(s) critique(s) dans votre stock !`
+        pushBrowserNotif('⚠️ SGS SaaS — Nouvelle alerte', msg)
+        addToast(msg, 'critique')
+      }
+      prevAlertCount.current = count
+    } catch (_) {}
+  }, [pushBrowserNotif, addToast])
+
+  // ── Scanner stocks critiques + expirations (démarrage + toutes les 5 min) ─
+  const scanExpirations = useCallback(async () => {
+    try { await verifierExpirations(30) } catch (_) {}
+    try { await verifierStocks() } catch (_) {}
+  }, [])
 
   useEffect(() => {
     getIaStats()
       .then(data => setIaStatus({ ok: true, model: data.llm_model, docs: data.documents_count }))
       .catch(() => setIaStatus({ ok: false }))
-    getAlertes({ statut: 'active', per_page: 1 })
-      .then(data => setAlertCount(data?.total ?? data?.alertes?.length ?? 0))
-      .catch(() => {})
-  }, [])
 
-  function handleLogout() {
+    fetchAlertCount()
+    fetchNotifCount()
+    scanExpirations()   // scan immédiat au chargement
+
+    const alertInterval = setInterval(fetchAlertCount,  30_000)
+    const notifInterval = setInterval(fetchNotifCount,  60_000)
+    const expInterval   = setInterval(scanExpirations, 600_000) // toutes les 10 min
+    return () => { clearInterval(alertInterval); clearInterval(notifInterval); clearInterval(expInterval) }
+  }, [fetchAlertCount, fetchNotifCount, scanExpirations])
+
+  async function handleLogout() {
     logout()
-    navigate('/')
+    await clerkSignOut()
+    navigate('/login', { replace: true })
   }
 
   const initiales  = user
@@ -86,8 +165,8 @@ export default function DashboardLayout({ children }) {
 
         {/* Logo */}
         <div className="ds-logo">
-          <div className="ds-logo-icon">
-            <Package size={18} color="var(--teal)" />
+          <div className="ds-logo-icon" style={{ background: 'transparent', padding: 0, overflow: 'hidden', borderRadius: 8 }}>
+            <img src={logoImg} alt="Logo" style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 8, display: 'block' }} />
           </div>
           <div>
             <span className="ds-logo-name">SGS SaaS</span>
@@ -97,7 +176,11 @@ export default function DashboardLayout({ children }) {
 
         {/* Profil */}
         <div className="ds-profile">
-          <div className="ds-avatar">{initiales}</div>
+          <div className="ds-avatar">
+            {avatar
+              ? <img src={avatar} alt="profil" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+              : initiales}
+          </div>
           <div className="ds-profile-info">
             <div className="ds-user-name">{nomComplet}</div>
             <span className="ds-role-badge">{roleDisplay}</span>
@@ -195,7 +278,11 @@ export default function DashboardLayout({ children }) {
             </button>
             <div className="topbar-lang">FR</div>
             <button className="topbar-user" onClick={() => setUserMenuOpen(v => !v)}>
-              <div className="topbar-avatar">{initiales}</div>
+              <div className="topbar-avatar">
+                {avatar
+                  ? <img src={avatar} alt="profil" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+                  : initiales}
+              </div>
               <div className="topbar-user-info">
                 <span className="topbar-user-name">{nomComplet}</span>
                 <span className="topbar-user-role">{roleDisplay}</span>
@@ -220,6 +307,41 @@ export default function DashboardLayout({ children }) {
           {children}
         </div>
       </div>
+
+      {/* ── Toasts notifications in-app ── */}
+      {toasts.length > 0 && (
+        <div style={{
+          position: 'fixed', bottom: 24, right: 24,
+          display: 'flex', flexDirection: 'column', gap: 10,
+          zIndex: 9999, maxWidth: 360,
+        }}>
+          {toasts.map(t => (
+            <div key={t.id} style={{
+              background: t.niveau === 'critique' ? '#FEF2F2' : '#FFF7ED',
+              border: `1.5px solid ${t.niveau === 'critique' ? '#EF4444' : '#F97316'}`,
+              borderRadius: 10, padding: '12px 14px',
+              display: 'flex', alignItems: 'flex-start', gap: 10,
+              boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+              animation: 'slideIn 0.3s ease',
+            }}>
+              <AlertTriangle size={18} color={t.niveau === 'critique' ? '#EF4444' : '#F97316'}
+                style={{ flexShrink: 0, marginTop: 1 }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, fontSize: 13,
+                  color: t.niveau === 'critique' ? '#B91C1C' : '#C2410C' }}>
+                  Alerte Stock
+                </div>
+                <div style={{ fontSize: 12, color: '#374151', marginTop: 2 }}>{t.message}</div>
+              </div>
+              <button onClick={() => setToasts(prev => prev.filter(x => x.id !== t.id))}
+                style={{ background: 'none', border: 'none', cursor: 'pointer',
+                  color: '#9CA3AF', padding: 0, flexShrink: 0 }}>
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
     </div>
   )

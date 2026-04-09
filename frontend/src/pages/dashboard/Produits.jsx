@@ -2,20 +2,40 @@ import { useState, useEffect } from 'react'
 import { Package, Plus, Pencil, Trash2, Loader, X, Check, AlertTriangle, Search } from 'lucide-react'
 import DashboardLayout from '../../components/DashboardLayout'
 import { useAuth } from '../../context/AuthContext'
-import { getProduits, createProduit, updateProduit, deleteProduit } from '../../services/api'
+import { getProduits, createProduit, updateProduit, deleteProduit, getStocks, verifierExpirations } from '../../services/api'
 import './common.css'
+
+// ── Helpers dates ──────────────────────────────────────────
+function fmtDate(d) {
+  if (!d) return '—'
+  return new Date(d + 'T00:00:00').toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' })
+}
+
+function dateStatus(dateStr) {
+  if (!dateStr) return null
+  const today = new Date(); today.setHours(0,0,0,0)
+  const d = new Date(dateStr + 'T00:00:00')
+  const diff = Math.ceil((d - today) / 86400000)
+  if (diff < 0)  return { label: `Expiré (${fmtDate(dateStr)})`,      color: '#DC3545', bg: '#FEF2F2' }
+  if (diff === 0) return { label: `Expire aujourd'hui`,                 color: '#DC3545', bg: '#FEF2F2' }
+  if (diff <= 7)  return { label: `${fmtDate(dateStr)} (${diff}j)`,    color: '#DC3545', bg: '#FFF0F0' }
+  if (diff <= 30) return { label: `${fmtDate(dateStr)} (${diff}j)`,    color: '#E8730A', bg: '#FFF7ED' }
+  return               { label: fmtDate(dateStr),                       color: '#28A745', bg: '#F0FDF4' }
+}
 
 // ── Modal Créer / Modifier ──────────────────────────────────
 function ProduitModal({ mode, initial, onClose, onSaved }) {
   const isCreate = mode === 'create'
   const [form, setForm] = useState({
-    reference:        initial?.reference        || '',
-    designation:      initial?.designation      || '',
-    categorie:        initial?.categorie        || '',
-    unite_mesure:     initial?.unite_mesure     || 'unite',
-    prix_unitaire:    initial?.prix_unitaire    ?? '',
-    seuil_alerte_min: initial?.seuil_alerte_min ?? '',
-    seuil_alerte_max: initial?.seuil_alerte_max ?? '',
+    reference:         initial?.reference         || '',
+    designation:       initial?.designation       || '',
+    categorie:         initial?.categorie         || '',
+    unite_mesure:      initial?.unite_mesure      || 'unite',
+    prix_unitaire:     initial?.prix_unitaire     ?? '',
+    seuil_alerte_min:  initial?.seuil_alerte_min  ?? '',
+    seuil_alerte_max:  initial?.seuil_alerte_max  ?? '',
+    date_fabrication:  initial?.date_fabrication  || '',
+    date_expiration:   initial?.date_expiration   || '',
   })
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState(null)
@@ -34,6 +54,8 @@ function ProduitModal({ mode, initial, onClose, onSaved }) {
         prix_unitaire:    form.prix_unitaire    !== '' ? Number(form.prix_unitaire)    : undefined,
         seuil_alerte_min: form.seuil_alerte_min !== '' ? Number(form.seuil_alerte_min) : undefined,
         seuil_alerte_max: form.seuil_alerte_max !== '' ? Number(form.seuil_alerte_max) : undefined,
+        date_fabrication: form.date_fabrication || undefined,
+        date_expiration:  form.date_expiration  || undefined,
       }
       if (isCreate) payload.reference = form.reference
 
@@ -147,6 +169,25 @@ function ProduitModal({ mode, initial, onClose, onSaved }) {
               />
             </div>
           </div>
+
+          <div className="form-row">
+            <div className="form-group">
+              <label>Date de fabrication</label>
+              <input
+                type="date"
+                value={form.date_fabrication}
+                onChange={e => set('date_fabrication', e.target.value)}
+              />
+            </div>
+            <div className="form-group">
+              <label>Date d'expiration</label>
+              <input
+                type="date"
+                value={form.date_expiration}
+                onChange={e => set('date_expiration', e.target.value)}
+              />
+            </div>
+          </div>
         </form>
 
         <div className="modal-footer">
@@ -214,13 +255,15 @@ export default function Produits() {
   const isAdmin  = user?.role === 'admin'
   const canWrite = user?.role === 'admin' || user?.role === 'gestionnaire'
 
-  const [produits,   setProduits]   = useState([])
-  const [loading,    setLoading]    = useState(true)
-  const [error,      setError]      = useState(null)
-  const [search,     setSearch]     = useState('')
-  const [filterCat,  setFilterCat]  = useState('')
-  const [modal,      setModal]      = useState(null)
-  const [toast,      setToast]      = useState(null)
+  const [produits,      setProduits]      = useState([])
+  const [qteProduit,    setQteProduit]    = useState({})
+  const [loading,       setLoading]       = useState(true)
+  const [error,         setError]         = useState(null)
+  const [search,        setSearch]        = useState('')
+  const [filterCat,     setFilterCat]     = useState('')
+  const [modal,         setModal]         = useState(null)
+  const [toast,         setToast]         = useState(null)
+  const [scanLoading,   setScanLoading]   = useState(false)
 
   useEffect(() => { load() }, [])
 
@@ -228,12 +271,43 @@ export default function Produits() {
     setLoading(true)
     setError(null)
     try {
-      const data = await getProduits()
-      setProduits(Array.isArray(data) ? data : [])
+      const [prodData, stockData] = await Promise.allSettled([getProduits(), getStocks()])
+      const prods = prodData.status === 'fulfilled' && Array.isArray(prodData.value) ? prodData.value : []
+      setProduits(prods)
+
+      if (stockData.status === 'fulfilled') {
+        const stocks = Array.isArray(stockData.value) ? stockData.value : []
+        const qteMap = {}
+        stocks.forEach(s => { qteMap[s.produit_id] = (qteMap[s.produit_id] || 0) + (s.quantite || 0) })
+        setQteProduit(qteMap)
+      }
     } catch (err) {
       setError(err.message)
     } finally {
       setLoading(false)
+    }
+
+    // Scanner automatiquement les expirations à chaque chargement
+    try {
+      await verifierExpirations(30)
+    } catch (_) {}
+  }
+
+  async function handleScanExpirations() {
+    setScanLoading(true)
+    try {
+      const res = await verifierExpirations(30)
+      const nb  = res?.alertes_declenchees ?? 0
+      showToast(
+        nb > 0
+          ? `${nb} nouvelle(s) alerte(s) d'expiration déclenchée(s) — emails envoyés.`
+          : `Scan terminé — aucune nouvelle alerte d'expiration (déjà alerté ou aucun produit proche).`,
+        nb > 0
+      )
+    } catch (err) {
+      showToast('Erreur lors du scan : ' + err.message, false)
+    } finally {
+      setScanLoading(false)
     }
   }
 
@@ -296,13 +370,22 @@ export default function Produits() {
               </p>
             </div>
           </div>
-          {canWrite && (
-            <div className="page-hdr-actions">
+          <div className="page-hdr-actions">
+            <button
+              className="btn-ghost"
+              onClick={handleScanExpirations}
+              disabled={scanLoading}
+              title="Scanner tous les produits et déclencher les alertes d'expiration proche"
+              style={{ color: '#E8730A', borderColor: '#E8730A' }}
+            >
+              {scanLoading ? <><Loader size={14} className="spin" /> Scan…</> : '📅 Scanner expirations'}
+            </button>
+            {canWrite && (
               <button className="btn-primary" onClick={() => setModal({ type: 'create' })}>
                 <Plus size={15} /> Nouveau produit
               </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         {/* ── Toolbar ── */}
@@ -372,62 +455,70 @@ export default function Produits() {
                     <th>CATÉGORIE</th>
                     <th>UNITÉ</th>
                     <th>PRIX/U</th>
+                    <th>QUANTITÉ</th>
                     <th>SEUIL MIN</th>
                     <th>SEUIL MAX</th>
+                    <th>DATE FABR.</th>
+                    <th>DATE EXP.</th>
                     <th>STATUT</th>
                     <th>ACTIONS</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map(p => (
-                    <tr key={p.id}>
-                      <td className="td-id">#{p.id}</td>
-                      <td>
-                        <span className="badge badge-teal">{p.reference}</span>
-                      </td>
-                      <td className="td-name">{p.designation}</td>
-                      <td className="text-muted">{p.categorie || '—'}</td>
-                      <td className="text-muted">{p.unite_mesure || '—'}</td>
-                      <td className="text-navy">
-                        {p.prix_unitaire != null
-                          ? `${Number(p.prix_unitaire).toLocaleString('fr-FR', { minimumFractionDigits: 2 })} MAD`
-                          : '—'
-                        }
-                      </td>
-                      <td className="text-muted">{p.seuil_alerte_min ?? '—'}</td>
-                      <td className="text-muted">{p.seuil_alerte_max ?? '—'}</td>
-                      <td>
-                        <span className={`badge ${p.est_actif ? 'badge-green' : 'badge-gray'}`}>
-                          {p.est_actif ? 'Actif' : 'Inactif'}
-                        </span>
-                      </td>
-                      <td>
-                        <div className="act-btn-row">
-                          {canWrite && (
-                            <button
-                              className="act-btn edit"
-                              title="Modifier"
-                              onClick={() => setModal({ type: 'edit', item: p })}
-                            >
-                              <Pencil size={14} />
-                            </button>
-                          )}
-                          {isAdmin && (
-                            <button
-                              className="act-btn del"
-                              title="Supprimer"
-                              onClick={() => setModal({ type: 'delete', item: p })}
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          )}
-                          {!canWrite && (
-                            <span className="text-light" style={{ fontSize: 12 }}>—</span>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                  {filtered.map(p => {
+                    const qte     = qteProduit[p.id] ?? null
+                    const expSt   = dateStatus(p.date_expiration)
+                    const fabSt   = p.date_fabrication ? { label: fmtDate(p.date_fabrication), color: '#6B7280', bg: null } : null
+                    const isLow   = qte !== null && qte <= (p.seuil_alerte_min ?? 0)
+                    return (
+                      <tr key={p.id}>
+                        <td className="td-id">#{p.id}</td>
+                        <td><span className="badge badge-teal">{p.reference}</span></td>
+                        <td className="td-name">{p.designation}</td>
+                        <td className="text-muted">{p.categorie || '—'}</td>
+                        <td className="text-muted">{p.unite_mesure || '—'}</td>
+                        <td className="text-navy">
+                          {p.prix_unitaire != null
+                            ? `${Number(p.prix_unitaire).toLocaleString('fr-FR', { minimumFractionDigits: 2 })} MAD`
+                            : '—'}
+                        </td>
+                        <td style={{ fontWeight: 700, color: isLow ? '#DC3545' : '#1E1B4B' }}>
+                          {qte !== null ? qte.toLocaleString('fr-FR') : '—'}
+                          {isLow && <span style={{ fontSize: 10, marginLeft: 4, color: '#DC3545' }}>⚠</span>}
+                        </td>
+                        <td className="text-muted">{p.seuil_alerte_min ?? '—'}</td>
+                        <td className="text-muted">{p.seuil_alerte_max ?? '—'}</td>
+                        <td style={{ fontSize: 12, color: fabSt?.color || '#9CA3AF' }}>
+                          {fabSt?.label || '—'}
+                        </td>
+                        <td>
+                          {expSt
+                            ? <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 7px', borderRadius: 6, background: expSt.bg, color: expSt.color }}>{expSt.label}</span>
+                            : <span className="text-muted">—</span>}
+                        </td>
+                        <td>
+                          <span className={`badge ${p.est_actif ? 'badge-green' : 'badge-gray'}`}>
+                            {p.est_actif ? 'Actif' : 'Inactif'}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="act-btn-row">
+                            {canWrite && (
+                              <button className="act-btn edit" title="Modifier" onClick={() => setModal({ type: 'edit', item: p })}>
+                                <Pencil size={14} />
+                              </button>
+                            )}
+                            {isAdmin && (
+                              <button className="act-btn del" title="Supprimer" onClick={() => setModal({ type: 'delete', item: p })}>
+                                <Trash2 size={14} />
+                              </button>
+                            )}
+                            {!canWrite && <span className="text-light" style={{ fontSize: 12 }}>—</span>}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

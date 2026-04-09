@@ -110,6 +110,47 @@ async def verifier_anomalies_mouvement(token: str):
         pass  # Service Alertes indisponible → on continue sans bloquer
 
 
+async def declencher_anomalie_stock_insuffisant(
+    produit_id:         int,
+    produit_nom:        str,
+    entrepot_id:        int,
+    entrepot_nom:       str,
+    quantite_demandee:  float,
+    quantite_disponible: float,
+    type_mouvement:     str,
+    token:              str,
+) -> None:
+    """
+    Crée une alerte CRITIQUE de type anomalie lorsqu'une sortie ou un transfert
+    est tenté avec une quantité supérieure au stock disponible.
+    Ne bloque pas si Service Alertes ne répond pas.
+    """
+    manque  = round(quantite_demandee - quantite_disponible, 2)
+    message = (
+        f"🚫 ANOMALIE STOCK INSUFFISANT — {type_mouvement} de {quantite_demandee} unités "
+        f"refusé pour {produit_nom} dans {entrepot_nom} — "
+        f"Stock disponible : {quantite_disponible} unités — "
+        f"Manque : {manque} unités"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{settings.ALERTES_SERVICE_URL}/api/v1/alertes/declencher",
+                json={
+                    "produit_id":        produit_id,
+                    "produit_nom":       produit_nom,
+                    "entrepot_id":       entrepot_id,
+                    "entrepot_nom":      entrepot_nom,
+                    "niveau":            "CRITIQUE",
+                    "quantite_actuelle": quantite_disponible,
+                    "message":           message,
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except Exception:
+        pass
+
+
 async def indexer_mouvement_dans_rag(mouvement_id: int, produit_id: int,
                                       entrepot_id: int, token: str):
     """
@@ -341,10 +382,31 @@ async def creer_mouvement(
     if data.type_mouvement == TypeMouvement.ENTREE:
         produit_details = await recuperer_produit_details(data.produit_id, token)
 
-        # 1. Vérifier que la date d'expiration ≠ aujourd'hui
+        # 1. Bloquer si la date de fabrication est dans le futur (produit invalide)
+        date_fabrication_str = produit_details.get("date_fabrication")
+        if date_fabrication_str:
+            date_fab = date.fromisoformat(date_fabrication_str)
+            if date_fab > date.today():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Mouvement d'entrée refusé : date de fabrication invalide ({date_fabrication_str}) — "
+                        "le produit ne peut pas avoir été fabriqué dans le futur."
+                    )
+                )
+
+        # 2. Bloquer si le produit est déjà expiré (date_expiration ≤ aujourd'hui)
         date_expiration_str = produit_details.get("date_expiration")
         if date_expiration_str:
             date_exp = date.fromisoformat(date_expiration_str)
+            if date_exp < date.today():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Mouvement d'entrée refusé : le produit est périmé depuis le {date_expiration_str}. "
+                        "Ce produit ne peut pas entrer en stock."
+                    )
+                )
             if date_exp == date.today():
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -399,23 +461,53 @@ async def creer_mouvement(
 
     elif data.type_mouvement == TypeMouvement.SORTIE:
         # Diminuer le stock de l'entrepôt source
-        await appeler_stock_diminuer(
-            produit_id   = data.produit_id,
-            entrepot_id  = data.entrepot_source_id,
-            quantite     = data.quantite,
-            token        = token,
-            mouvement_ref= data.reference
-        )
+        try:
+            await appeler_stock_diminuer(
+                produit_id   = data.produit_id,
+                entrepot_id  = data.entrepot_source_id,
+                quantite     = data.quantite,
+                token        = token,
+                mouvement_ref= data.reference
+            )
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            if detail.get("error") == "Stock insuffisant":
+                await declencher_anomalie_stock_insuffisant(
+                    produit_id          = data.produit_id,
+                    produit_nom         = produit_nom,
+                    entrepot_id         = data.entrepot_source_id,
+                    entrepot_nom        = entrepot_source_nom or f"Entrepôt {data.entrepot_source_id}",
+                    quantite_demandee   = data.quantite,
+                    quantite_disponible = detail.get("disponible", 0),
+                    type_mouvement      = "SORTIE",
+                    token               = token,
+                )
+            raise  # bloque le mouvement
 
     elif data.type_mouvement == TypeMouvement.TRANSFERT:
         # Étape 1 — Diminuer le stock source
-        await appeler_stock_diminuer(
-            produit_id   = data.produit_id,
-            entrepot_id  = data.entrepot_source_id,
-            quantite     = data.quantite,
-            token        = token,
-            mouvement_ref= data.reference
-        )
+        try:
+            await appeler_stock_diminuer(
+                produit_id   = data.produit_id,
+                entrepot_id  = data.entrepot_source_id,
+                quantite     = data.quantite,
+                token        = token,
+                mouvement_ref= data.reference
+            )
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            if detail.get("error") == "Stock insuffisant":
+                await declencher_anomalie_stock_insuffisant(
+                    produit_id          = data.produit_id,
+                    produit_nom         = produit_nom,
+                    entrepot_id         = data.entrepot_source_id,
+                    entrepot_nom        = entrepot_source_nom or f"Entrepôt {data.entrepot_source_id}",
+                    quantite_demandee   = data.quantite,
+                    quantite_disponible = detail.get("disponible", 0),
+                    type_mouvement      = "TRANSFERT",
+                    token               = token,
+                )
+            raise  # bloque le mouvement
         # Étape 2 — Augmenter le stock destination
         await appeler_stock_augmenter(
             produit_id   = data.produit_id,

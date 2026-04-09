@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Package, Warehouse, ArrowLeftRight, Bell, TrendingDown,
+  Package, Warehouse, ArrowLeftRight, Bell, TrendingDown, TrendingUp,
   DollarSign, CheckCircle,
   ArrowUp, Loader, Users, ChevronRight, AlertTriangle, X, Brain,
 } from 'lucide-react'
@@ -9,6 +9,7 @@ import DashboardLayout from '../../components/DashboardLayout'
 import { useAuth } from '../../context/AuthContext'
 import {
   getDashboard, getAlertes, getMouvements, getEntrepots, getUtilisateurs, getPrevisionsML,
+  getHistoriquePL,
 } from '../../services/api'
 import './Dashboard.css'
 
@@ -51,8 +52,20 @@ function fmtDate(dateStr) {
   }) + ' ' + fmtTime(dateStr)
 }
 
-// Palette indigo/violet pour le donut
-const ENTREPOT_COLORS = ['#6366F1', '#8B5CF6', '#A78BFA', '#C4B5FD', '#818CF8', '#4F46E5']
+// Palette inspirée du diagramme de pollution
+const CHART_COLORS = [
+  '#FFD700', // or/jaune
+  '#1A3A7A', // bleu marine
+  '#CC2222', // rouge
+  '#7B3F9E', // violet
+  '#87CEEB', // bleu clair
+  '#2E7D32', // vert foncé
+  '#FF6600', // orange
+  '#E91E8C', // rose/magenta
+  '#009688', // teal
+  '#795548', // marron
+]
+const ENTREPOT_COLORS = CHART_COLORS
 
 // ── Regrouper mouvements par mois ─────────────────────────
 function buildBarData(mouvements) {
@@ -135,10 +148,17 @@ function EntrepotOccupation({ entrepots }) {
   return (
     <div className="occ-list">
       {entrepots.map(e => {
-        const taux = e.taux_occupation != null
-          ? Math.round(e.taux_occupation)
-          : (e.capacite_max > 0 ? Math.round((e.capacite_utilisee || 0) / e.capacite_max * 100) : 0)
-        const barColor = taux >= 85 ? '#EF4444' : taux >= 60 ? '#F59E0B' : '#6366F1'
+        const stockReel   = e.capacite_utilisee || 0
+        const capaciteMax = e.capacite_max || 0
+        // Détecter une capacité mal configurée (< stock réel = valeur invalide)
+        const nonConfiguree = capaciteMax > 0 && capaciteMax < stockReel
+        // Utiliser le stock comme base si capacite_max est invalide
+        const base  = nonConfiguree ? stockReel : capaciteMax
+        const taux  = base > 0 ? Math.min(Math.round(stockReel / base * 100), 100) : 0
+        const barColor = nonConfiguree ? '#9CA3AF'
+          : taux >= 85 ? '#EF4444'
+          : taux >= 60 ? '#F59E0B'
+          : '#6366F1'
         return (
           <div key={e.id} className="occ-row">
             <div className="occ-row-top">
@@ -146,15 +166,31 @@ function EntrepotOccupation({ entrepots }) {
                 <Warehouse size={13} color="#6366F1" />
                 <span>{e.nom}</span>
               </div>
-              <span className="occ-row-pct" style={{ color: barColor }}>{taux}%</span>
+              {nonConfiguree
+                ? <span className="occ-row-pct" style={{ color: '#F59E0B', fontSize: 11 }}>⚠ Non configuré</span>
+                : <span className="occ-row-pct" style={{ color: barColor }}>{taux}%</span>
+              }
             </div>
             <div className="occ-row-info">
-              {(e.capacite_utilisee || 0).toLocaleString('fr-FR')} / {(e.capacite_max || 0).toLocaleString('fr-FR')} unités
+              {stockReel.toLocaleString('fr-FR')} unités
+              {nonConfiguree
+                ? <span style={{ color: '#F59E0B', marginLeft: 6, fontSize: 11 }}>· capacité max non définie</span>
+                : <span style={{ color: '#9CA3AF' }}> / {capaciteMax.toLocaleString('fr-FR')}</span>
+              }
             </div>
             <div className="occ-bar-bg">
-              <div className="occ-bar-fill" style={{ width: `${Math.min(taux, 100)}%`, background: barColor }} />
+              <div className="occ-bar-fill" style={{
+                width: nonConfiguree ? '100%' : `${taux}%`,
+                background: barColor,
+                opacity: nonConfiguree ? 0.35 : 1,
+              }} />
             </div>
-            {taux >= 85 && (
+            {nonConfiguree && (
+              <div className="occ-warning" style={{ color: '#F59E0B' }}>
+                ⚠️ Définir la capacité dans Entrepôts → Modifier
+              </div>
+            )}
+            {!nonConfiguree && taux >= 85 && (
               <div className="occ-warning">⚠️ Capacité critique</div>
             )}
           </div>
@@ -237,9 +273,81 @@ function BarChart({ data }) {
         })}
       </div>
       <div className="bar-legend">
-        <span><i style={{ background: '#6366F1' }} /> Entrées</span>
-        <span><i style={{ background: '#8B5CF6' }} /> Sorties</span>
-        <span><i style={{ background: '#ADB5BD' }} /> Transferts</span>
+        <span><i style={{ background: '#2E7D32' }} /> Entrées</span>
+        <span><i style={{ background: '#CC2222' }} /> Sorties</span>
+        <span><i style={{ background: '#FF6600' }} /> Transferts</span>
+      </div>
+    </div>
+  )
+}
+
+// Line chart SVG — courbe entrées vs sorties
+function LineChart({ data }) {
+  const W = 520, H = 180, PL = 36, PR = 16, PT = 16, PB = 32
+  const iW = W - PL - PR
+  const iH = H - PT - PB
+  const maxVal = Math.max(...data.flatMap(d => [d.entrees, d.sorties]), 1)
+
+  const toX = i => PL + (i / (data.length - 1 || 1)) * iW
+  const toY = v => PT + iH - (v / maxVal) * iH
+
+  const pointsEntrees  = data.map((d, i) => `${toX(i)},${toY(d.entrees)}`).join(' ')
+  const pointsSorties  = data.map((d, i) => `${toX(i)},${toY(d.sorties)}`).join(' ')
+  const areaEntrees    = `${PL},${PT + iH} ` + data.map((d, i) => `${toX(i)},${toY(d.entrees)}`).join(' ') + ` ${toX(data.length - 1)},${PT + iH}`
+  const areaSorties    = `${PL},${PT + iH} ` + data.map((d, i) => `${toX(i)},${toY(d.sorties)}`).join(' ') + ` ${toX(data.length - 1)},${PT + iH}`
+
+  const ticks = [0, Math.round(maxVal / 2), maxVal]
+
+  return (
+    <div className="line-chart-wrap">
+      <svg viewBox={`0 0 ${W} ${H}`} className="line-chart-svg">
+        <defs>
+          <linearGradient id="gradE" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#2E7D32" stopOpacity="0.25" />
+            <stop offset="100%" stopColor="#2E7D32" stopOpacity="0.02" />
+          </linearGradient>
+          <linearGradient id="gradS" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#CC2222" stopOpacity="0.20" />
+            <stop offset="100%" stopColor="#CC2222" stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+
+        {/* Grille horizontale */}
+        {ticks.map((t, i) => (
+          <g key={i}>
+            <line x1={PL} x2={W - PR} y1={toY(t)} y2={toY(t)}
+              stroke="#E5E7EB" strokeWidth="1" strokeDasharray="4 3" />
+            <text x={PL - 4} y={toY(t) + 4} textAnchor="end"
+              fontSize="10" fill="#9CA3AF">{t}</text>
+          </g>
+        ))}
+
+        {/* Aires remplies */}
+        <polygon points={areaEntrees} fill="url(#gradE)" />
+        <polygon points={areaSorties} fill="url(#gradS)" />
+
+        {/* Courbes */}
+        <polyline points={pointsEntrees} fill="none"
+          stroke="#2E7D32" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+        <polyline points={pointsSorties} fill="none"
+          stroke="#CC2222" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+
+        {/* Points */}
+        {data.map((d, i) => (
+          <g key={i}>
+            <circle cx={toX(i)} cy={toY(d.entrees)} r="4"
+              fill="#fff" stroke="#2E7D32" strokeWidth="2" />
+            <circle cx={toX(i)} cy={toY(d.sorties)} r="4"
+              fill="#fff" stroke="#CC2222" strokeWidth="2" />
+            {/* Label axe X */}
+            <text x={toX(i)} y={H - 6} textAnchor="middle"
+              fontSize="11" fill="#9CA3AF">{d.label}</text>
+          </g>
+        ))}
+      </svg>
+      <div className="line-chart-legend">
+        <span><i style={{ background: '#2E7D32' }} />Entrées</span>
+        <span><i style={{ background: '#CC2222' }} />Sorties</span>
       </div>
     </div>
   )
@@ -296,13 +404,19 @@ function DonutChart({ entrepots }) {
 
 // Alerte row
 const niveauCfg = {
-  critique: { color: '#EF4444', bg: '#FEF2F2', label: 'Rupture stock' },
-  rupture:  { color: '#EF4444', bg: '#FEF2F2', label: 'Rupture stock' },
-  surstock: { color: '#F59E0B', bg: '#FFFBEB', label: 'Surstock détecté' },
-  normal:   { color: '#D97706', bg: '#FFFBEB', label: 'Stock faible' },
+  CRITIQUE:          { color: '#CC2222', bg: '#FEF2F2', label: 'Stock critique' },
+  RUPTURE:           { color: '#CC2222', bg: '#FEF2F2', label: 'Rupture stock'  },
+  SURSTOCK:          { color: '#FF6600', bg: '#FFF3E0', label: 'Surstock'       },
+  NORMAL:            { color: '#2E7D32', bg: '#F0FDF4', label: 'Normal'         },
+  EXPIRATION_PROCHE: { color: '#7B3F9E', bg: '#F5F0FF', label: 'Expiration'     },
+  // fallback minuscules
+  critique: { color: '#CC2222', bg: '#FEF2F2', label: 'Stock critique' },
+  rupture:  { color: '#CC2222', bg: '#FEF2F2', label: 'Rupture stock'  },
+  surstock: { color: '#FF6600', bg: '#FFF3E0', label: 'Surstock'       },
+  normal:   { color: '#2E7D32', bg: '#F0FDF4', label: 'Normal'         },
 }
 function AlerteRow({ a, onVoir }) {
-  const cfg = niveauCfg[a.niveau] || niveauCfg.normal
+  const cfg = niveauCfg[a.niveau] || niveauCfg.NORMAL
   return (
     <div className="alerte-row" style={{ borderLeftColor: cfg.color }}>
       <div className="alerte-badge" style={{ background: cfg.color }}>{cfg.label}</div>
@@ -407,6 +521,7 @@ export default function Dashboard() {
   const [entrepots,   setEntrepots]   = useState([])
   const [users,       setUsers]       = useState([])
   const [previsions,  setPrevisions]  = useState([])
+  const [lastPL,      setLastPL]      = useState(null)
   const [loading,     setLoading]     = useState(true)
   const [tabFilter,   setTabFilter]   = useState('tous')
   const [alertPopup,  setAlertPopup]  = useState(null)   // alerte critique à afficher
@@ -414,24 +529,29 @@ export default function Dashboard() {
   useEffect(() => {
     Promise.allSettled([
       getDashboard(),
-      getAlertes({ statut: 'active', per_page: 6 }),
+      getAlertes({ statut: 'ACTIVE', per_page: 6 }),
       getMouvements({ per_page: 100 }),
       getEntrepots(),
       user?.role === 'admin' ? getUtilisateurs() : Promise.resolve([]),
       getPrevisionsML(),
-    ]).then(([d, a, m, e, u, p]) => {
+      (user?.role === 'admin' || user?.role === 'gestionnaire') ? getHistoriquePL({ limit: 1 }) : Promise.resolve(null),
+    ]).then(([d, a, m, e, u, p, pl]) => {
       if (d.status === 'fulfilled') setDash(d.value)
       if (a.status === 'fulfilled') {
         const list = a.value?.alertes || []
         setAlertes(list)
         // Afficher popup pour la première alerte critique
-        const crit = list.find(al => al.niveau === 'critique' || al.niveau === 'rupture')
+        const crit = list.find(al => ['CRITIQUE','RUPTURE','critique','rupture'].includes(al.niveau))
         if (crit) setAlertPopup(crit)
       }
       if (m.status === 'fulfilled') setMouvs(m.value?.mouvements || [])
       if (e.status === 'fulfilled') setEntrepots(Array.isArray(e.value) ? e.value : e.value?.entrepots || [])
       if (u.status === 'fulfilled') setUsers(Array.isArray(u.value) ? u.value.slice(0, 4) : [])
       if (p.status === 'fulfilled') setPrevisions(Array.isArray(p.value) ? p.value : [])
+      if (pl.status === 'fulfilled' && pl.value) {
+        const hist = Array.isArray(pl.value) ? pl.value : pl.value?.historique || []
+        if (hist.length > 0) setLastPL(hist[0])
+      }
       setLoading(false)
     })
   }, [user?.role])
@@ -496,6 +616,87 @@ export default function Dashboard() {
               />
             </div>
 
+            {/* ── Profit & Pertes (P&L) ── */}
+            {(user?.role === 'admin' || user?.role === 'gestionnaire') && (
+              <div className="pl-dashboard-section">
+                <div className="pl-dashboard-header">
+                  <DollarSign size={16} color="#6366F1" />
+                  <span className="pl-dashboard-title">Profit &amp; Pertes — Dernier calcul</span>
+                  <button className="btn-ghost" style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 12px' }}
+                    onClick={() => navigate('/dashboard/reporting')}>
+                    {lastPL ? 'Recalculer' : 'Calculer le P&L'} →
+                  </button>
+                </div>
+                {lastPL ? (() => {
+                  const ca    = lastPL.chiffre_affaires > 0 ? lastPL.chiffre_affaires : null
+                  const base  = ca ?? lastPL.valeur_stock
+                  const marge = lastPL.profit
+                  const taux  = base > 0 ? ((lastPL.profit / base) * 100).toFixed(1) : null
+                  return (
+                  <div className="pl-dashboard-grid">
+                    {/* CA réel ou Valeur du stock */}
+                    <div className="pl-dash-card">
+                      <div className="pl-dash-icon" style={{ background: '#EEF2FF' }}>
+                        <Package size={18} color="#6366F1" />
+                      </div>
+                      <div className="pl-dash-label">
+                        {ca ? 'Chiffre d\'affaires (sorties)' : 'Valeur du stock'}
+                      </div>
+                      <div className="pl-dash-value" style={{ color: '#6366F1' }}>
+                        {fmtCurrency(ca ?? lastPL.valeur_stock)}
+                      </div>
+                      {ca && (
+                        <div className="pl-dash-sub">Stock : {fmtCurrency(lastPL.valeur_stock)}</div>
+                      )}
+                    </div>
+                    {/* Total dépenses */}
+                    <div className="pl-dash-card">
+                      <div className="pl-dash-icon" style={{ background: '#FEF2F2' }}>
+                        <TrendingDown size={18} color="#DC3545" />
+                      </div>
+                      <div className="pl-dash-label">Total dépenses</div>
+                      <div className="pl-dash-value" style={{ color: '#DC3545' }}>
+                        {fmtCurrency(lastPL.total_depenses)}
+                      </div>
+                    </div>
+                    {/* Marge brute */}
+                    <div className="pl-dash-card">
+                      <div className="pl-dash-icon" style={{ background: marge >= 0 ? '#F0FDF4' : '#FEF2F2' }}>
+                        <DollarSign size={18} color={marge >= 0 ? '#28A745' : '#DC3545'} />
+                      </div>
+                      <div className="pl-dash-label">Marge brute</div>
+                      <div className="pl-dash-value" style={{ color: marge >= 0 ? '#28A745' : '#DC3545' }}>
+                        {marge >= 0 ? '+' : ''}{fmtCurrency(marge)}
+                      </div>
+                    </div>
+                    {/* Profit net */}
+                    <div className="pl-dash-card" style={{ border: `2px solid ${lastPL.profit >= 0 ? '#28A745' : '#DC3545'}` }}>
+                      <div className="pl-dash-icon" style={{ background: lastPL.profit >= 0 ? '#F0FDF4' : '#FEF2F2' }}>
+                        {lastPL.profit >= 0 ? <TrendingUp size={18} color="#28A745" /> : <TrendingDown size={18} color="#DC3545" />}
+                      </div>
+                      <div className="pl-dash-label">Profit net</div>
+                      <div className="pl-dash-value" style={{ color: lastPL.profit >= 0 ? '#28A745' : '#DC3545', fontSize: 20, fontWeight: 700 }}>
+                        {lastPL.profit >= 0 ? '+' : ''}{fmtCurrency(lastPL.profit)}
+                      </div>
+                      {taux && (
+                        <div className="pl-dash-sub">Taux : {taux}%</div>
+                      )}
+                    </div>
+                  </div>
+                  )
+                })() : (
+                  <div className="pl-dashboard-empty">
+                    <DollarSign size={32} color="#E5E7EB" />
+                    <p>Aucun calcul P&L effectué.<br />Rendez-vous dans <b>Reporting</b> pour calculer le profit &amp; pertes.</p>
+                    <button className="btn-primary" style={{ marginTop: 10 }}
+                      onClick={() => navigate('/dashboard/reporting')}>
+                      Calculer le P&L
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* ── Charts ── */}
             <div className="charts-row">
               <div className="chart-card chart-card--bar">
@@ -510,6 +711,15 @@ export default function Dashboard() {
                 </div>
                 <DonutChart entrepots={entrepots} />
               </div>
+            </div>
+
+            {/* ── Courbe évolution entrées / sorties ── */}
+            <div className="chart-card chart-card--line">
+              <div className="chart-header">
+                <span className="chart-title">Évolution des flux — 6 derniers mois</span>
+                <span style={{ fontSize: 11, color: '#9CA3AF' }}>Entrées vs Sorties</span>
+              </div>
+              <LineChart data={barData} />
             </div>
 
             {/* ── Occupation entrepôts + Prévisions IA ── */}
@@ -705,14 +915,59 @@ export default function Dashboard() {
                     <span>Valeur totale du stock</span>
                   </div>
                   <div className="value-big">{fmtCurrency(kpi?.valeur_stock_total)}</div>
-                  <div className="value-sub">
-                    Taux d'occupation moyen : {Math.round(kpi?.taux_occupation_moyen || 0)}%
-                  </div>
-                  <div className="value-bar">
-                    <div className="value-bar-fill"
-                      style={{ width: `${Math.min(kpi?.taux_occupation_moyen || 0, 100)}%` }} />
-                  </div>
+                  {(() => {
+                    const taux = kpi?.taux_occupation_moyen || 0
+                    const tauxAffiche = Math.min(Math.round(taux), 100)
+                    const nonConfig   = taux > 100
+                    return (
+                      <>
+                        <div className="value-sub">
+                          {nonConfig
+                            ? <span style={{ color: '#F59E0B' }}>⚠ Certains entrepôts ont une capacité non configurée</span>
+                            : `Taux d'occupation moyen : ${tauxAffiche}%`
+                          }
+                        </div>
+                        <div className="value-bar">
+                          <div className="value-bar-fill"
+                            style={{ width: `${tauxAffiche}%`, background: nonConfig ? '#F59E0B' : undefined }} />
+                        </div>
+                      </>
+                    )
+                  })()}
                 </div>
+
+                {/* P&L mini-card */}
+                {(user?.role === 'admin' || user?.role === 'gestionnaire') && (
+                  <div className="bottom-card value-card" style={{ borderTop: lastPL ? (lastPL.profit >= 0 ? '3px solid #28A745' : '3px solid #DC3545') : '3px solid #E5E7EB' }}>
+                    <div className="bottom-card-header">
+                      {lastPL && lastPL.profit >= 0
+                        ? <TrendingUp size={16} color="#28A745" />
+                        : <TrendingDown size={16} color="#DC3545" />}
+                      <span>Profit & Pertes (dernier calcul)</span>
+                    </div>
+                    {lastPL ? (
+                      <>
+                        <div className="value-big" style={{ color: lastPL.profit >= 0 ? '#28A745' : '#DC3545' }}>
+                          {lastPL.profit >= 0 ? '+' : ''}{fmtCurrency(lastPL.profit)}
+                        </div>
+                        <div className="value-sub">
+                          Stock : {fmtCurrency(lastPL.valeur_stock)} · Charges : {fmtCurrency(lastPL.total_depenses)}
+                        </div>
+                        {lastPL.valeur_stock > 0 && (
+                          <div className="value-sub">
+                            Marge : {((lastPL.profit / lastPL.valeur_stock) * 100).toFixed(1)}%
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="value-sub" style={{ marginTop: 8 }}>Aucun calcul P&L effectué</div>
+                    )}
+                    <button className="rupture-cta" style={{ marginTop: 10 }}
+                      onClick={() => navigate('/dashboard/reporting')}>
+                      Calculer le P&L <ChevronRight size={13} />
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </>

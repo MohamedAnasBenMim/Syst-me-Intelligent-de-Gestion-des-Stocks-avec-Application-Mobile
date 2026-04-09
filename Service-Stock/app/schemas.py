@@ -31,8 +31,10 @@ class ProduitCreate(BaseModel):
     prix_unitaire:    float          = Field(default=0.0, ge=0)
     seuil_alerte_min: float          = Field(default=10.0,   ge=0)
     seuil_alerte_max: float          = Field(default=1000.0, ge=0)
-    date_fabrication: Optional[date] = Field(None, description="Date de fabrication du produit")
-    date_expiration:  Optional[date] = Field(None, description="Date d'expiration du produit")
+    date_fabrication: Optional[date]  = Field(None, description="Date de fabrication du produit")
+    date_expiration:  Optional[date]  = Field(None, description="Date d'expiration du produit")
+    en_promotion:     bool            = Field(False, description="Produit en promotion")
+    prix_promo:       Optional[float] = Field(None, ge=0, description="Prix promotionnel")
 
     @field_validator("seuil_alerte_max")
     @classmethod
@@ -60,6 +62,8 @@ class ProduitUpdate(BaseModel):
     seuil_alerte_max: Optional[float] = Field(None, ge=0)
     date_fabrication: Optional[date]  = None
     date_expiration:  Optional[date]  = None
+    en_promotion:     Optional[bool]  = None
+    prix_promo:       Optional[float] = Field(None, ge=0)
     est_actif:        Optional[bool]  = None
 
 

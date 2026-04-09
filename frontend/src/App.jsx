@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import './index.css'
+import './App.css'
 
 // Landing page sections
 import Navbar           from './components/Navbar'
@@ -16,8 +17,12 @@ import CtaFinal         from './components/CtaFinal'
 import Footer           from './components/Footer'
 
 // Pages auth
-import Register from './pages/Register'
-import Login    from './pages/Login'
+import Register       from './pages/Register'
+import Login          from './pages/Login'
+import ForgotPassword from './pages/ForgotPassword'
+import ResetPassword  from './pages/ResetPassword'
+import SSOCallback    from './pages/SSOCallback'
+import GoogleWelcome  from './pages/GoogleWelcome'
 
 // Pages dashboard
 import Dashboard           from './pages/dashboard/Dashboard'
@@ -66,9 +71,13 @@ export default function App() {
     <BrowserRouter>
       <AuthProvider>
         <Routes>
-          <Route path="/"         element={<LandingPage />} />
-          <Route path="/register" element={<Register />} />
-          <Route path="/login"    element={<Login />} />
+          <Route path="/"                    element={<LandingPage />} />
+          <Route path="/register"            element={<Register />} />
+          <Route path="/login"               element={<Login />} />
+          <Route path="/forgot-password"     element={<ForgotPassword />} />
+          <Route path="/reset-password"      element={<ResetPassword />} />
+          <Route path="/sso-callback"        element={<SSOCallback />} />
+          <Route path="/google-welcome"      element={<GoogleWelcome />} />
           {/* Routes protégées dashboard */}
           <Route path="/dashboard" element={
             <PrivateRoute><Dashboard /></PrivateRoute>

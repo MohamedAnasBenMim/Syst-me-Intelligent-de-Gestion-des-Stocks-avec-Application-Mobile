@@ -15,27 +15,27 @@ import enum
 
 
 class TypeRecommandation(str, enum.Enum):
-    REAPPROVISIONNEMENT = "reapprovisionnement"
-    TRANSFERT           = "transfert"
-    ALERTE_STOCK        = "alerte_stock"
-    OPTIMISATION        = "optimisation"
-    PROMOTION           = "promotion"
+    REAPPROVISIONNEMENT = "REAPPROVISIONNEMENT"
+    TRANSFERT           = "TRANSFERT"
+    ALERTE_STOCK        = "ALERTE_STOCK"
+    OPTIMISATION        = "OPTIMISATION"
+    PROMOTION           = "PROMOTION"
 
 
 class StatutRecommandation(str, enum.Enum):
-    GENEREE   = "generee"
-    ENVOYEE   = "envoyee"
-    VUE       = "vue"
-    ACCEPTEE  = "acceptee"
-    REJETEE   = "rejetee"
-    APPLIQUEE = "appliquee"
+    GENEREE   = "GENEREE"
+    ENVOYEE   = "ENVOYEE"
+    VUE       = "VUE"
+    ACCEPTEE  = "ACCEPTEE"
+    REJETEE   = "REJETEE"
+    APPLIQUEE = "APPLIQUEE"
 
 
 class UrgenceLevel(str, enum.Enum):
-    BASSE    = "basse"
-    MOYENNE  = "moyenne"
-    HAUTE    = "haute"
-    CRITIQUE = "critique"
+    BASSE    = "BASSE"
+    MOYENNE  = "MOYENNE"
+    HAUTE    = "HAUTE"
+    CRITIQUE = "CRITIQUE"
 
 
 # ── Table recommandations ──────────────────────────────────

@@ -1,14 +1,42 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { Mail, Eye, EyeOff, Check } from 'lucide-react'
+import { useClerk, useAuth as useClerkAuth } from '@clerk/react'
 import { login as apiLogin } from '../services/api'
 import { useAuth } from '../context/AuthContext'
+import logoImg from '../assets/becarthai-logo.jpg'
 import './Login.css'
 
 export default function Login() {
   const navigate  = useNavigate()
   const location  = useLocation()
   const { saveLogin } = useAuth()
+  const clerk = useClerk()
+  const { isSignedIn: clerkSignedIn } = useClerkAuth()
+
+  // Si déjà connecté via Clerk (session Google existante) → compléter le flux
+  useEffect(() => {
+    if (clerkSignedIn) navigate('/google-welcome', { replace: true })
+  }, [clerkSignedIn])
+
+  const handleGoogleLogin = async () => {
+    try {
+      const signIn = clerk.client?.signIn
+      if (!signIn) {
+        setApiError('Clerk non initialisé, réessayez dans quelques secondes.')
+        return
+      }
+      await signIn.authenticateWithRedirect({
+        strategy:            'oauth_google',
+        redirectUrl:         `${window.location.origin}/sso-callback`,
+        redirectUrlComplete: `${window.location.origin}/google-welcome`,
+      })
+    } catch (err) {
+      const msg = err?.errors?.[0]?.longMessage || err?.errors?.[0]?.message || err?.message || JSON.stringify(err)
+      setApiError(msg)
+      console.error('[Clerk] Erreur OAuth:', err)
+    }
+  }
 
   const [form, setForm]     = useState({ email: '', password: '', remember: false })
   const [showPw, setShowPw] = useState(false)
@@ -113,11 +141,7 @@ export default function Login() {
           {/* Logo */}
           <div className="ll-logo-top">
             <div className="ll-logo-icon">
-              <svg width="18" height="18" viewBox="0 0 36 36" fill="none">
-                <polygon points="6,16 18,7 30,16" fill="white" opacity="0.95"/>
-                <rect x="8" y="16" width="20" height="13" rx="1.5" fill="white" opacity="0.85"/>
-                <rect x="15" y="21" width="6" height="8" rx="1" fill="#5784BA"/>
-              </svg>
+              <img src={logoImg} alt="BecarthAI" style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 8, display: 'block' }} />
             </div>
             <span className="ll-logo-text">SGS <strong>SaaS</strong></span>
           </div>
@@ -152,7 +176,7 @@ export default function Login() {
             <div className="form-group">
               <div className="pw-label-row">
                 <label>Mot de passe</label>
-                <a href="#" className="lc-link" style={{ fontSize: '12px' }}>Mot de passe oublié ?</a>
+                <Link to="/forgot-password" className="lc-link" style={{ fontSize: '12px' }}>Mot de passe oublié ?</Link>
               </div>
               <div className="input-wrap">
                 <input name="password" type={showPw ? 'text' : 'password'}
@@ -183,7 +207,7 @@ export default function Login() {
 
             <div className="divider"><span>ou</span></div>
 
-            <button type="button" className="btn-google">
+            <button type="button" className="btn-google" onClick={handleGoogleLogin}>
               <svg width="18" height="18" viewBox="0 0 18 18">
                 <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615Z"/>
                 <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18Z"/>

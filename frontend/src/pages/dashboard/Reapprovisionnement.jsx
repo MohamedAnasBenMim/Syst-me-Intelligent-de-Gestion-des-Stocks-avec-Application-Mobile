@@ -117,7 +117,7 @@ function RagChat({ userInitials }) {
           {loading ? <Loader size={15} className="spin" /> : <Send size={15} />}
         </button>
       </div>
-      <p className="rag-hint">Alimenté par Mistral LLM + RAG · Entrée pour envoyer</p>
+      <p className="rag-hint">Alimenté par Groq LLM + RAG · Entrée pour envoyer</p>
     </div>
   )
 }
@@ -128,98 +128,377 @@ const urgenceConfig = {
   haute:    { color: '#E8730A', bg: '#FFF8F0', border: '#E8730A', label: 'HAUTE',    icon: AlertTriangle },
   moyenne:  { color: '#FFC107', bg: '#FFFDF0', border: '#FFC107', label: 'MOYENNE',  icon: AlertTriangle },
   basse:    { color: '#28A745', bg: '#F0FFF4', border: '#28A745', label: 'BASSE',    icon: CheckCircle },
+  stable:   { color: '#6366F1', bg: '#F5F3FF', border: '#C4B5FD', label: 'STABLE',   icon: CheckCircle },
 }
 
-function jourLabel(jours) {
-  if (jours <= 0)  return { text: 'Rupture dans 0 jours', color: '#DC3545' }
-  if (jours < 1)   return { text: 'Rupture dans < 1 jour', color: '#DC3545' }
-  return { text: `Rupture dans ${Math.floor(jours)} jour${jours >= 2 ? 's' : ''}`, color: jours <= 7 ? '#E8730A' : '#FFC107' }
+function jourLabel(jours, seuilJours) {
+  if (jours >= 9999) return { text: 'Aucune consommation — stock stable', color: '#6366F1' }
+  if (jours <= 0)    return { text: 'Rupture imminente !',                color: '#DC3545' }
+  const enDanger = jours <= seuilJours
+  return {
+    text:  `Rupture estimée dans ${Math.floor(jours)} jour${jours >= 2 ? 's' : ''}`,
+    color: enDanger ? (jours <= 7 ? '#DC3545' : '#E8730A') : '#6B7280',
+  }
 }
 
 // ── Composant carte prévision ──────────────────────────────
-function PrevisionCard({ p, onCommander }) {
-  const { text, color } = jourLabel(p.jours_avant_rupture)
-  const cfg = urgenceConfig[p.urgence] || urgenceConfig.basse
+function PrevisionCard({ p, seuilJours, onCommander }) {
+  const { text, color } = jourLabel(p.jours_avant_rupture, seuilJours)
+  const cfg  = urgenceConfig[p.urgence] || urgenceConfig.basse
   const Icon = cfg.icon
+  const isStable = p.urgence === 'stable'
 
   return (
-    <div className="prev-card" style={{ borderLeftColor: cfg.border }}>
+    <div className="prev-card" style={{ borderLeftColor: cfg.border, background: cfg.bg, opacity: isStable ? 0.85 : 1 }}>
       <div className="prev-card-left">
         <Icon size={22} color={cfg.color} />
       </div>
       <div className="prev-card-body">
-        <div className="prev-prod-name">{p.produit_nom}</div>
-        <div className="prev-rupture" style={{ color }}>{text}</div>
-        <div className="prev-qty">Commander {Math.round(p.quantite_a_commander)} unités
-          <span className="prev-entrepot"> · {p.entrepot_nom}</span>
+        <div className="prev-prod-name">
+          {p.produit_nom}
+          <span style={{
+            marginLeft: 8, fontSize: 10, fontWeight: 700,
+            padding: '2px 7px', borderRadius: 10,
+            background: cfg.color + '22', color: cfg.color,
+          }}>{cfg.label}</span>
         </div>
+        <div className="prev-rupture" style={{ color }}>{text}</div>
+        <div className="prev-qty">
+          {isStable
+            ? <span style={{ color: '#9CA3AF' }}>Stock actuel : {p.stock_actuel} · {p.entrepot_nom}</span>
+            : <>Commander {Math.round(p.quantite_a_commander)} unités
+                <span className="prev-entrepot"> · {p.entrepot_nom}</span>
+              </>
+          }
+        </div>
+        {p.recommandation && (
+          <div style={{ fontSize: 11, color: '#6B7280', marginTop: 3, fontStyle: 'italic' }}>
+            {p.recommandation}
+          </div>
+        )}
       </div>
-      <button className="btn btn-primary prev-btn" onClick={() => onCommander(p)}>
-        Commander
-      </button>
+      {!isStable && (
+        <button className="btn btn-primary prev-btn" onClick={() => onCommander(p)}>
+          Commander
+        </button>
+      )}
     </div>
   )
+}
+
+// ── Étoiles de notation ───────────────────────────────────
+function StarRating({ value, onChange }) {
+  const [hovered, setHovered] = useState(0)
+  return (
+    <div style={{ display: 'flex', gap: 4 }}>
+      {[1, 2, 3, 4, 5].map(n => (
+        <span
+          key={n}
+          onClick={() => onChange(n === value ? null : n)}
+          onMouseEnter={() => setHovered(n)}
+          onMouseLeave={() => setHovered(0)}
+          style={{
+            cursor: 'pointer', fontSize: 20,
+            color: n <= (hovered || value || 0) ? '#F59E0B' : '#D1D5DB',
+            transition: 'color 0.15s',
+          }}
+        >★</span>
+      ))}
+      {value && (
+        <span style={{ fontSize: 11, color: '#6B7280', alignSelf: 'center', marginLeft: 4 }}>
+          {['', 'Très mauvais', 'Mauvais', 'Correct', 'Bon', 'Excellent'][value]}
+        </span>
+      )}
+    </div>
+  )
+}
+
+// ── Calcul jours restants = date_expiration - aujourd'hui ──────────
+function calcJoursExpirationActuels(rec) {
+  const ctx = rec.contexte || {}
+
+  // Priorité 1 : date_expiration stockée directement dans le contexte (YYYY-MM-DD)
+  if (ctx.date_expiration) {
+    const [y, m, d] = ctx.date_expiration.split('-').map(Number)
+    const dateExp = new Date(y, m - 1, d)   // minuit heure locale
+    const today   = new Date()
+    today.setHours(0, 0, 0, 0)
+    return Math.ceil((dateExp - today) / (1000 * 60 * 60 * 24))
+  }
+
+  // Fallback : pour les anciennes recommandations sans date_expiration stockée
+  // on reconstruit depuis created_at + jours_avant_expiration_original
+  const joursOriginal = ctx.jours_avant_expiration
+  if (joursOriginal == null || !rec.created_at) return null
+  const createdAt = new Date(rec.created_at)
+  const dateExp   = new Date(createdAt)
+  dateExp.setDate(dateExp.getDate() + joursOriginal)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  dateExp.setHours(0, 0, 0, 0)
+  return Math.ceil((dateExp - today) / (1000 * 60 * 60 * 24))
 }
 
 // ── Composant carte recommandation IA ─────────────────────
 function RecommandationCard({ rec, onFeedback }) {
   const cfg = urgenceConfig[rec.urgence] || urgenceConfig.basse
-  const [loading, setLoading] = useState('')
-  const [done, setDone]       = useState('')
+  const [loading,         setLoading]       = useState(false)
+  const [phase,           setPhase]         = useState('')   // '' | 'accepted' | 'rejecting' | 'rejected'
+  const [showFeedback,    setShowFeedback]  = useState(false)
+  const [rating,          setRating]        = useState(null)
+  const [comment,         setComment]       = useState('')
+  const [qteReelle,       setQteReelle]     = useState('')
+  const [fbError,         setFbError]       = useState(null)
 
-  async function handle(action) {
-    setLoading(action)
+  // Jours d'expiration recalculés à partir d'aujourd'hui
+  const joursExpActuels = calcJoursExpirationActuels(rec)
+
+  // Date de génération de la recommandation
+  const genereLe = rec.created_at
+    ? new Date(rec.created_at).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })
+    : null
+
+  async function submit(action) {
+    setLoading(true)
+    setFbError(null)
+    if (action === 'rejetee') setPhase('rejecting')
     try {
-      await onFeedback(rec.id, { action_taken: action, comment: '' })
-      setDone(action)
+      await onFeedback(rec.id, {
+        action_taken:    action,
+        rating:          rating   || undefined,
+        comment:         comment  || undefined,
+        quantite_reelle: qteReelle !== '' ? Number(qteReelle) : undefined,
+      })
+      setPhase(action === 'rejetee' ? 'rejected' : 'accepted')
+    } catch (e) {
+      setFbError(e?.message || 'Erreur lors de l\'envoi du feedback.')
+      setPhase('')
     } finally {
-      setLoading('')
+      setLoading(false)
     }
   }
 
-  if (done === 'acceptee') return (
+  if (phase === 'accepted') return (
     <div className="rec-card rec-card--done success">
-      <Check size={16} /> Recommandation acceptée
-    </div>
-  )
-  if (done === 'rejetee') return (
-    <div className="rec-card rec-card--done warning">
-      <RefreshCw size={14} /> Rejetée — nouvelle recommandation en cours de génération…
+      <Check size={16} /> Recommandation acceptée — merci pour votre retour !
     </div>
   )
 
+  if (phase === 'rejecting') return (
+    <div className="rec-card rec-card--done" style={{ background: '#FFF8F0', borderColor: '#E8730A' }}>
+      <Loader size={14} className="spin" style={{ color: '#E8730A' }} />
+      <span style={{ marginLeft: 8, color: '#E8730A', fontWeight: 600 }}>
+        Rejet enregistré — l'IA génère une nouvelle recommandation…
+      </span>
+    </div>
+  )
+
+  if (phase === 'rejected') return (
+    <div className="rec-card rec-card--done" style={{ background: '#FFF8F0', borderColor: '#E8730A' }}>
+      <RefreshCw size={14} color="#E8730A" />
+      <span style={{ marginLeft: 8, color: '#E8730A', fontWeight: 600 }}>
+        Rejetée — nouvelle recommandation générée. Actualisez la liste.
+      </span>
+    </div>
+  )
+
+  // Statut initial du backend : "GENEREE" (pas encore traitée)
+  const isPending = rec.statut === 'GENEREE'
+
   return (
     <div className="rec-card" style={{ borderLeftColor: cfg.border, background: cfg.bg }}>
+      {/* ── En-tête ── */}
       <div className="rec-card-header">
         <span className="rec-urgence-badge" style={{ background: cfg.color }}>{cfg.label}</span>
-        <div className="rec-confiance">
-          <span>Confiance IA</span>
-          <div className="rec-confiance-bar">
-            <div className="rec-confiance-fill"
-              style={{ width: `${Math.round(rec.confiance_score * 100)}%` }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {/* Jours expiration recalculés */}
+          {joursExpActuels != null && (
+            <span style={{
+              fontSize: 12, fontWeight: 600, padding: '2px 8px', borderRadius: 8,
+              background: joursExpActuels <= 3 ? '#FEE2E2' : joursExpActuels <= 7 ? '#FEF9C3' : '#F0FDF4',
+              color: joursExpActuels <= 3 ? '#DC3545' : joursExpActuels <= 7 ? '#B45309' : '#28A745',
+            }}>
+              {joursExpActuels <= 0
+                ? '⚠ Expiré'
+                : `⏱ Expire dans ${joursExpActuels}j`}
+            </span>
+          )}
+          <div className="rec-confiance">
+            <span>Confiance IA</span>
+            <div className="rec-confiance-bar">
+              <div className="rec-confiance-fill"
+                style={{ width: `${Math.round(rec.confiance_score * 100)}%` }} />
+            </div>
+            <span>{Math.round(rec.confiance_score * 100)}%</span>
           </div>
-          <span>{Math.round(rec.confiance_score * 100)}%</span>
         </div>
       </div>
+
+      {/* Avertissement si recommandation ancienne */}
+      {genereLe && (
+        <div style={{ fontSize: 11, color: '#9CA3AF', marginBottom: 4 }}>
+          Générée le {genereLe}
+          {joursExpActuels != null && (
+            <span style={{ color: '#6366F1', marginLeft: 6 }}>
+              · Expiration recalculée à partir d'aujourd'hui : <b>{joursExpActuels <= 0 ? 'expiré' : `${joursExpActuels} jours`}</b>
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* ── Contenu ── */}
       <div className="rec-titre">{rec.titre}</div>
-      <div className="rec-contenu">{rec.contenu}</div>
+      <div className="rec-contenu">
+        {joursExpActuels != null
+          ? rec.contenu.replace(
+              /dans\s+\d+\s+jours?/gi,
+              `dans ${joursExpActuels} jour${joursExpActuels > 1 ? 's' : ''}`
+            )
+          : rec.contenu}
+      </div>
       <div className="rec-meta">
         <span><Package size={12} /> Produit #{rec.produit_id}</span>
-        <span><Warehouse size={12} /> Entrepôt #{rec.entrepot_id}</span>
+        <span><Warehouse size={12} /> Entrepôt #{rec.entrepot_id || '—'}</span>
         {rec.quantite_suggeree && (
           <span className="rec-qty-chip">Commander {Math.round(rec.quantite_suggeree)} unités</span>
         )}
+        {rec.fournisseur_suggere && (
+          <span className="rec-qty-chip" style={{ background: '#EFF6FF', color: '#3B82F6' }}>
+            Fournisseur : {rec.fournisseur_suggere}
+          </span>
+        )}
+        {!isPending && (
+          <span className="rec-qty-chip" style={{ background: '#F3F4F6', color: '#6B7280' }}>
+            Statut : {rec.statut}
+          </span>
+        )}
       </div>
-      <div className="rec-actions">
-        <button className="rec-btn accept" onClick={() => handle('acceptee')} disabled={!!loading}>
-          {loading === 'acceptee' ? <Loader size={14} className="spin" /> : <Check size={14} />}
-          Accepter
-        </button>
-        <button className="rec-btn reject" onClick={() => handle('rejetee')} disabled={!!loading}>
-          {loading === 'rejetee' ? <Loader size={14} className="spin" /> : <X size={14} />}
-          Rejeter
-        </button>
-      </div>
+
+      {/* ── Boutons principaux (seulement si en attente) ── */}
+      {isPending && !showFeedback && (
+        <div className="rec-actions">
+          <button className="rec-btn accept" onClick={() => setShowFeedback(true)} disabled={loading}>
+            <Check size={14} /> Accepter
+          </button>
+          <button className="rec-btn reject" onClick={() => submit('rejetee')} disabled={loading}>
+            {loading ? <Loader size={14} className="spin" /> : <X size={14} />}
+            Rejeter
+          </button>
+          <button
+            className="rec-btn"
+            style={{ background: '#F3F4F6', color: '#6B7280', border: '1px solid #E5E7EB' }}
+            onClick={() => setShowFeedback(v => !v)}
+          >
+            ★ Donner un avis
+          </button>
+        </div>
+      )}
+
+      {/* Bouton avis pour recommandations déjà traitées */}
+      {!isPending && !showFeedback && (
+        <div className="rec-actions">
+          <button
+            className="rec-btn"
+            style={{ background: '#F3F4F6', color: '#6B7280', border: '1px solid #E5E7EB' }}
+            onClick={() => setShowFeedback(v => !v)}
+          >
+            ★ Donner un avis
+          </button>
+        </div>
+      )}
+
+      {/* ── Zone feedback ── */}
+      {showFeedback && (
+        <div style={{
+          marginTop: 12, padding: '14px 16px', borderRadius: 10,
+          background: '#F9FAFB', border: '1px solid #E5E7EB',
+        }}>
+          <div style={{ fontWeight: 600, fontSize: 13, color: '#374151', marginBottom: 10 }}>
+            ★ Votre retour sur cette recommandation
+          </div>
+
+          {fbError && (
+            <div style={{ color: '#DC3545', fontSize: 12, marginBottom: 8 }}>
+              <AlertTriangle size={12} /> {fbError}
+            </div>
+          )}
+
+          {/* Note */}
+          <div style={{ marginBottom: 10 }}>
+            <label style={{ fontSize: 12, color: '#6B7280', display: 'block', marginBottom: 4 }}>
+              Note de qualité
+            </label>
+            <StarRating value={rating} onChange={setRating} />
+          </div>
+
+          {/* Quantité réelle commandée */}
+          <div style={{ marginBottom: 10 }}>
+            <label style={{ fontSize: 12, color: '#6B7280', display: 'block', marginBottom: 4 }}>
+              Quantité réellement commandée (optionnel)
+            </label>
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={qteReelle}
+              onChange={e => setQteReelle(e.target.value)}
+              placeholder={rec.quantite_suggeree ? `Suggérée : ${Math.round(rec.quantite_suggeree)}` : 'Ex : 50'}
+              style={{
+                width: '100%', padding: '7px 10px', borderRadius: 6,
+                border: '1px solid #D1D5DB', fontSize: 13,
+              }}
+            />
+          </div>
+
+          {/* Commentaire */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 12, color: '#6B7280', display: 'block', marginBottom: 4 }}>
+              Commentaire (optionnel)
+            </label>
+            <textarea
+              value={comment}
+              onChange={e => setComment(e.target.value)}
+              placeholder="Ex : Quantité insuffisante, mauvais fournisseur suggéré…"
+              rows={2}
+              style={{
+                width: '100%', padding: '7px 10px', borderRadius: 6,
+                border: '1px solid #D1D5DB', fontSize: 13, resize: 'vertical',
+                fontFamily: 'inherit',
+              }}
+            />
+          </div>
+
+          {/* Actions finales */}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="rec-btn accept"
+              onClick={() => submit('acceptee')}
+              disabled={loading}
+              style={{ flex: 1 }}
+            >
+              {loading ? <Loader size={14} className="spin" /> : <Check size={14} />}
+              Accepter & envoyer
+            </button>
+            <button
+              className="rec-btn reject"
+              onClick={() => submit('rejetee')}
+              disabled={loading}
+              style={{ flex: 1 }}
+            >
+              {loading ? <Loader size={14} className="spin" /> : <X size={14} />}
+              Rejeter & envoyer
+            </button>
+            <button
+              className="rec-btn"
+              onClick={() => setShowFeedback(false)}
+              disabled={loading}
+              style={{ background: '#F3F4F6', color: '#6B7280', border: '1px solid #E5E7EB' }}
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -235,6 +514,7 @@ export default function Reapprovisionnement() {
   const [recommandations, setRecommandations] = useState([])
   const [loadingPrev,     setLoadingPrev]     = useState(true)
   const [loadingRec,      setLoadingRec]      = useState(true)
+  const [errorPrev,       setErrorPrev]       = useState(null)
   const [formOpen,        setFormOpen]        = useState(false)
   const [seuilJours,      setSeuilJours]      = useState(30)
   const [genLoading,      setGenLoading]      = useState(false)
@@ -246,17 +526,27 @@ export default function Reapprovisionnement() {
 
   async function fetchPrevisions() {
     setLoadingPrev(true)
+    setErrorPrev(null)
     try {
       const data = await getPrevisions(seuilJours)
-      setPrevisions(data.previsions || [])
-    } catch { setPrevisions([]) }
-    finally { setLoadingPrev(false) }
+      const list = data?.previsions || []
+      setPrevisions(list)
+      if (list.length === 0 && !data?.success) {
+        setErrorPrev('Impossible de récupérer les prévisions. Vérifiez que les services sont démarrés.')
+      }
+    } catch (e) {
+      setPrevisions([])
+      setErrorPrev(e?.message || 'Erreur de connexion au service IA.')
+    } finally {
+      setLoadingPrev(false)
+    }
   }
 
   async function fetchRecs() {
     setLoadingRec(true)
     try {
-      const data = await getRecommandations({ statut: 'en_attente', per_page: 20 })
+      // Charger toutes les recommandations récentes (pas seulement en_attente)
+      const data = await getRecommandations({ per_page: 30 })
       setRecommandations(data.recommandations || [])
     } catch { setRecommandations([]) }
     finally { setLoadingRec(false) }
@@ -284,7 +574,7 @@ export default function Reapprovisionnement() {
 
   async function handleFeedback(id, feedback) {
     await sendFeedback(id, feedback)
-    fetchRecs()
+    await fetchRecs()
   }
 
   return (
@@ -326,18 +616,44 @@ export default function Reapprovisionnement() {
 
           {loadingPrev ? (
             <div className="reappro-loading"><Loader size={20} className="spin" /> Calcul en cours…</div>
+          ) : errorPrev ? (
+            <div className="reappro-empty" style={{ color: '#DC3545' }}>
+              <AlertTriangle size={32} color="#DC3545" />
+              <p style={{ fontWeight: 600 }}>Erreur de chargement</p>
+              <p style={{ fontSize: 12, color: '#6B7280', maxWidth: 380, textAlign: 'center' }}>{errorPrev}</p>
+            </div>
           ) : previsions.length === 0 ? (
             <div className="reappro-empty">
               <CheckCircle size={32} color="#28A745" />
-              <p>Aucune rupture prévue dans les {seuilJours} prochains jours</p>
+              <p>Aucune donnée de stock disponible</p>
+              <p style={{ fontSize: 12, color: '#9CA3AF' }}>Ajoutez des produits en stock pour voir les prévisions.</p>
             </div>
           ) : (
-            <div className="prev-list">
-              {previsions.map((p, i) => (
-                <PrevisionCard key={`${p.produit_id}-${p.entrepot_id}-${i}`}
-                  p={p} onCommander={handleCommander} />
-              ))}
-            </div>
+            <>
+              {/* Résumé période */}
+              {(() => {
+                const enDanger = previsions.filter(p => p.jours_avant_rupture < seuilJours && p.urgence !== 'stable')
+                const stables  = previsions.filter(p => p.urgence === 'stable')
+                return (
+                  <div style={{ display: 'flex', gap: 12, padding: '8px 0 12px', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 12, color: enDanger.length ? '#DC3545' : '#28A745', fontWeight: 600 }}>
+                      {enDanger.length > 0
+                        ? `⚠ ${enDanger.length} produit(s) à risque dans les ${seuilJours} prochains jours`
+                        : `✔ Aucune rupture dans les ${seuilJours} prochains jours`}
+                    </span>
+                    <span style={{ fontSize: 12, color: '#6B7280' }}>
+                      · {stables.length} produit(s) stables (sans consommation enregistrée)
+                    </span>
+                  </div>
+                )
+              })()}
+              <div className="prev-list">
+                {previsions.map((p, i) => (
+                  <PrevisionCard key={`${p.produit_id}-${p.entrepot_id}-${i}`}
+                    p={p} seuilJours={seuilJours} onCommander={handleCommander} />
+                ))}
+              </div>
+            </>
           )}
 
           {genLoading && (
@@ -354,17 +670,17 @@ export default function Reapprovisionnement() {
 
           <div className="prophet-footer">
             <Brain size={13} color="#ADB5BD" />
-            <span>Alimenté par Mistral LLM + LangChain</span>
+            <span>Alimenté par Groq LLM + RAG</span>
           </div>
         </div>
 
-        {/* ── Recommandations IA en attente ── */}
+        {/* ── Recommandations IA ── */}
         <div className="reappro-card">
           <div className="reappro-card-header">
             <div className="reappro-card-title">
               <Brain size={18} color="var(--teal)" />
-              <span>Recommandations IA en attente</span>
-              {!loadingRec && (
+              <span>Recommandations IA</span>
+              {!loadingRec && recommandations.length > 0 && (
                 <span className="rec-count-badge">{recommandations.length}</span>
               )}
             </div>
@@ -377,15 +693,47 @@ export default function Reapprovisionnement() {
             <div className="reappro-loading"><Loader size={20} className="spin" /> Chargement…</div>
           ) : recommandations.length === 0 ? (
             <div className="reappro-empty">
-              <CheckCircle size={32} color="#28A745" />
-              <p>Aucune recommandation en attente</p>
+              <Brain size={32} color="#C4B5FD" />
+              <p style={{ fontWeight: 600, color: '#374151' }}>Aucune recommandation générée</p>
+              <p style={{ fontSize: 12, color: '#9CA3AF', maxWidth: 320, textAlign: 'center' }}>
+                Cliquez sur <b>Commander</b> sur une prévision ci-dessus, ou utilisez
+                le bouton <b>+ Nouvelle demande</b> pour générer une recommandation IA.
+              </p>
             </div>
           ) : (
-            <div className="rec-list">
-              {recommandations.map(rec => (
-                <RecommandationCard key={rec.id} rec={rec} onFeedback={handleFeedback} />
-              ))}
-            </div>
+            <>
+              {/* Recommandations en attente de décision (statut GENEREE) */}
+              {recommandations.filter(r => r.statut === 'GENEREE').length > 0 && (
+                <>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#E8730A', marginBottom: 8, padding: '0 4px' }}>
+                    En attente de décision ({recommandations.filter(r => r.statut === 'GENEREE').length})
+                  </div>
+                  <div className="rec-list">
+                    {recommandations
+                      .filter(r => r.statut === 'GENEREE')
+                      .map(rec => (
+                        <RecommandationCard key={rec.id} rec={rec} onFeedback={handleFeedback} />
+                      ))}
+                  </div>
+                </>
+              )}
+
+              {/* Recommandations déjà traitées (ACCEPTEE / REJETEE) */}
+              {recommandations.filter(r => r.statut !== 'GENEREE').length > 0 && (
+                <>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#6B7280', margin: '16px 0 8px', padding: '0 4px' }}>
+                    Historique — Donner votre avis ({recommandations.filter(r => r.statut !== 'GENEREE').length})
+                  </div>
+                  <div className="rec-list">
+                    {recommandations
+                      .filter(r => r.statut !== 'GENEREE')
+                      .map(rec => (
+                        <RecommandationCard key={rec.id} rec={rec} onFeedback={handleFeedback} />
+                      ))}
+                  </div>
+                </>
+              )}
+            </>
           )}
         </div>
 
@@ -402,7 +750,7 @@ export default function Reapprovisionnement() {
               <div className="modal-body">
                 <p style={{ fontSize: 13, color: '#6B7280', marginBottom: 14 }}>
                   Décrivez votre besoin en langage naturel — l'IA génère automatiquement
-                  la recommandation via le pipeline RAG + Mistral.
+                  la recommandation via le pipeline RAG + Groq.
                 </p>
                 <div className="form-group">
                   <label>Votre demande</label>
@@ -446,7 +794,7 @@ export default function Reapprovisionnement() {
             <div className="reappro-card-title">
               <Brain size={18} color="var(--teal)" />
               <span>Assistant IA — Questions sur votre stock</span>
-              <span className="prophet-badge">RAG · Mistral</span>
+              <span className="prophet-badge">RAG · Groq</span>
             </div>
           </div>
           <RagChat userInitials={initiales} />

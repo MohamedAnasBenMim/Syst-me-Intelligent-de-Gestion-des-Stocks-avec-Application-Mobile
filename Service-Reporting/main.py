@@ -9,6 +9,16 @@ from app.routes import router
 
 Base.metadata.create_all(bind=engine)
 
+# Migration : ajouter les colonnes manquantes si elles n'existent pas encore
+with engine.connect() as conn:
+    try:
+        conn.execute(__import__('sqlalchemy').text(
+            "ALTER TABLE calculs_profit_perte ADD COLUMN IF NOT EXISTS chiffre_affaires FLOAT DEFAULT 0.0"
+        ))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
 app = FastAPI(
     title       = f"{settings.SERVICE_NAME} — SGS SaaS",
     description = "Tableau de bord analytique, KPI, ML Descriptif et ML Prédictif",

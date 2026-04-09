@@ -1,7 +1,7 @@
 # app/schemas.py — service_auth/
 # Validation des données JSON avec Pydantic
 
-from pydantic import BaseModel, Field, validator, EmailStr
+from pydantic import BaseModel, Field, validator
 from typing import Optional
 from datetime import datetime
 from enum import Enum
@@ -97,6 +97,37 @@ class SalairesStatsResponse(BaseModel):
     total_salaires : float
     nb_employes    : int
     detail         : list[SalaireEmploye]
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Données reçues pour demander une réinitialisation du mot de passe."""
+    email: str = Field(..., description="Email de l'utilisateur")
+
+    @validator("email")
+    def email_lowercase(cls, v: str) -> str:
+        return v.lower().strip()
+
+
+class ForgotPasswordResponse(BaseModel):
+    """Réponse après demande de reset : session JWT à renvoyer pour valider l'OTP."""
+    message:       str
+    session_token: Optional[str] = None  # None si email inconnu (sécurité)
+
+
+class ResetPasswordRequest(BaseModel):
+    """Valider le code OTP et définir le nouveau mot de passe."""
+    session_token:    str = Field(..., description="JWT de session retourné par /forgot-password")
+    otp_code:         str = Field(..., min_length=6, max_length=6, description="Code à 6 chiffres reçu par email")
+    nouveau_password: str = Field(..., min_length=6)
+
+
+class ClerkLoginRequest(BaseModel):
+    """Connexion via Google OAuth (Clerk) — échange token Clerk contre JWT backend."""
+    clerk_user_id: str         # ID Clerk (user_xxx) pour vérification via API officielle
+    clerk_token:   str = ""    # token JWT Clerk (fallback)
+    email:         str = ""
+    prenom:        str = ""
+    nom:           str = ""
 
 
 class ChangePasswordRequest(BaseModel):

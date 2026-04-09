@@ -1,32 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { Menu, X } from 'lucide-react'
+import logoImg from '../assets/becarthai-logo.jpg'
 import './Navbar.css'
-
-const SGSLogo = () => (
-  <svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <rect width="36" height="36" rx="10" fill="url(#logo-grad)"/>
-    <defs>
-      <linearGradient id="logo-grad" x1="0" y1="0" x2="36" y2="36" gradientUnits="userSpaceOnUse">
-        <stop offset="0%" stopColor="#5784BA"/>
-        <stop offset="100%" stopColor="#9AC8EB"/>
-      </linearGradient>
-    </defs>
-    {/* Warehouse roof */}
-    <polygon points="6,16 18,7 30,16" fill="white" opacity="0.95"/>
-    {/* Building body */}
-    <rect x="8" y="16" width="20" height="13" rx="1.5" fill="white" opacity="0.85"/>
-    {/* Door */}
-    <rect x="15" y="21" width="6" height="8" rx="1" fill="#5784BA"/>
-    {/* Left window */}
-    <rect x="10" y="18" width="4" height="3" rx="1" fill="#B6D8F2"/>
-    {/* Right window */}
-    <rect x="22" y="18" width="4" height="3" rx="1" fill="#B6D8F2"/>
-    {/* Pulse dot (live indicator) */}
-    <circle cx="28" cy="8" r="3.5" fill="#F4CFDF"/>
-    <circle cx="28" cy="8" r="2" fill="white"/>
-  </svg>
-)
 
 const links = ['Fonctionnalités', 'Tarifs', 'À propos', 'Contact']
 
@@ -46,7 +22,7 @@ export default function Navbar() {
 
         {/* LOGO */}
         <a href="#" className="navbar-logo">
-          <SGSLogo />
+          <img src={logoImg} alt="BecarthAI" style={{ width: 36, height: 36, objectFit: 'cover', borderRadius: 9 }} />
           <span>SGS <strong>SaaS</strong></span>
         </a>
 
