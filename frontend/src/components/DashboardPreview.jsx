@@ -155,8 +155,8 @@ export default function DashboardPreview() {
                     ))}
                   </div>
                   <div className="chart-months">
-                    {['J','F','M','A','M','J','J','A','S','O','N','D'].map(m => (
-                      <span key={m}>{m}</span>
+                    {['J','F','M','A','M','J','J','A','S','O','N','D'].map((m, i) => (
+                      <span key={i}>{m}</span>
                     ))}
                   </div>
                 </div>

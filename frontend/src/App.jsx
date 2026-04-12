@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
+
 import './index.css'
 import './App.css'
 
@@ -12,7 +13,7 @@ import HowItWorks       from './components/HowItWorks'
 import DashboardPreview from './components/DashboardPreview'
 import Pricing          from './components/Pricing'
 import Testimonials     from './components/Testimonials'
-import FAQ             from './components/FAQ'
+import FAQ              from './components/FAQ'
 import CtaFinal         from './components/CtaFinal'
 import Footer           from './components/Footer'
 
@@ -68,58 +69,60 @@ function PrivateRoute({ children }) {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <AuthProvider>
-        <Routes>
-          <Route path="/"                    element={<LandingPage />} />
-          <Route path="/register"            element={<Register />} />
-          <Route path="/login"               element={<Login />} />
-          <Route path="/forgot-password"     element={<ForgotPassword />} />
-          <Route path="/reset-password"      element={<ResetPassword />} />
-          <Route path="/sso-callback"        element={<SSOCallback />} />
-          <Route path="/google-welcome"      element={<GoogleWelcome />} />
-          {/* Routes protégées dashboard */}
-          <Route path="/dashboard" element={
-            <PrivateRoute><Dashboard /></PrivateRoute>
-          } />
-          <Route path="/dashboard/reapprovisionnement" element={
-            <PrivateRoute><Reapprovisionnement /></PrivateRoute>
-          } />
-          <Route path="/dashboard/ia" element={
-            <PrivateRoute><IaRag /></PrivateRoute>
-          } />
-          <Route path="/dashboard/utilisateurs" element={
-            <PrivateRoute><Utilisateurs /></PrivateRoute>
-          } />
-          <Route path="/dashboard/entrepots" element={
-            <PrivateRoute><Entrepots /></PrivateRoute>
-          } />
-          <Route path="/dashboard/produits" element={
-            <PrivateRoute><Produits /></PrivateRoute>
-          } />
-          <Route path="/dashboard/stocks" element={
-            <PrivateRoute><Stocks /></PrivateRoute>
-          } />
-          <Route path="/dashboard/mouvements" element={
-            <PrivateRoute><Mouvements /></PrivateRoute>
-          } />
-          <Route path="/dashboard/alertes" element={
-            <PrivateRoute><Alertes /></PrivateRoute>
-          } />
-          <Route path="/dashboard/notifications" element={
-            <PrivateRoute><Notifications /></PrivateRoute>
-          } />
-          <Route path="/dashboard/reporting" element={
-            <PrivateRoute><Reporting /></PrivateRoute>
-          } />
-          <Route path="/dashboard/promotions" element={
-            <PrivateRoute><Promotions /></PrivateRoute>
-          } />
-          <Route path="/dashboard/parametres" element={
-            <PrivateRoute><Parametres /></PrivateRoute>
-          } />
-        </Routes>
-      </AuthProvider>
-    </BrowserRouter>
+    <>
+      <BrowserRouter>
+        <AuthProvider>
+          <Routes>
+            <Route path="/"                    element={<LandingPage />} />
+            <Route path="/register"            element={<Register />} />
+            <Route path="/login"               element={<Login />} />
+            <Route path="/forgot-password"     element={<ForgotPassword />} />
+            <Route path="/reset-password"      element={<ResetPassword />} />
+            <Route path="/sso-callback"        element={<SSOCallback />} />
+            <Route path="/google-welcome"      element={<GoogleWelcome />} />
+            {/* Routes protégées dashboard */}
+            <Route path="/dashboard" element={
+              <PrivateRoute><Dashboard /></PrivateRoute>
+            } />
+            <Route path="/dashboard/reapprovisionnement" element={
+              <PrivateRoute><Reapprovisionnement /></PrivateRoute>
+            } />
+            <Route path="/dashboard/ia" element={
+              <PrivateRoute><IaRag /></PrivateRoute>
+            } />
+            <Route path="/dashboard/utilisateurs" element={
+              <PrivateRoute><Utilisateurs /></PrivateRoute>
+            } />
+            <Route path="/dashboard/entrepots" element={
+              <PrivateRoute><Entrepots /></PrivateRoute>
+            } />
+            <Route path="/dashboard/produits" element={
+              <PrivateRoute><Produits /></PrivateRoute>
+            } />
+            <Route path="/dashboard/stocks" element={
+              <PrivateRoute><Stocks /></PrivateRoute>
+            } />
+            <Route path="/dashboard/mouvements" element={
+              <PrivateRoute><Mouvements /></PrivateRoute>
+            } />
+            <Route path="/dashboard/alertes" element={
+              <PrivateRoute><Alertes /></PrivateRoute>
+            } />
+            <Route path="/dashboard/notifications" element={
+              <PrivateRoute><Notifications /></PrivateRoute>
+            } />
+            <Route path="/dashboard/reporting" element={
+              <PrivateRoute><Reporting /></PrivateRoute>
+            } />
+            <Route path="/dashboard/promotions" element={
+              <PrivateRoute><Promotions /></PrivateRoute>
+            } />
+            <Route path="/dashboard/parametres" element={
+              <PrivateRoute><Parametres /></PrivateRoute>
+            } />
+          </Routes>
+        </AuthProvider>
+      </BrowserRouter>
+    </>
   )
 }

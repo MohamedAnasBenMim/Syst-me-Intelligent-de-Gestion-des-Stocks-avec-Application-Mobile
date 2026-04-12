@@ -1,7 +1,7 @@
 # app/routes.py — service_auth/
 # Tous les endpoints du Auth Service
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import List
@@ -209,16 +209,17 @@ async def get_me(
     summary="Envoyer un code OTP de réinitialisation par email",
 )
 async def forgot_password(
-    data: schemas.ForgotPasswordRequest,
-    db:   Session = Depends(get_db),
+    data:       schemas.ForgotPasswordRequest,
+    background: BackgroundTasks,
+    db:         Session = Depends(get_db),
 ):
     """
-    Génère un code OTP à 6 chiffres, l'envoie par email,
-    et retourne un session_token (JWT signé) à renvoyer lors du reset.
+    Génère un code OTP à 6 chiffres, l'envoie par email en arrière-plan,
+    et retourne immédiatement un session_token (JWT signé).
     Retourne toujours succès pour ne pas révéler si l'email existe.
     """
     utilisateur = db.query(models.Utilisateur).filter(
-        models.Utilisateur.email     == data.email,
+        models.Utilisateur.email     == data.email.lower().strip(),
         models.Utilisateur.est_actif == True,
     ).first()
 
@@ -226,7 +227,9 @@ async def forgot_password(
     if utilisateur:
         otp           = generate_otp()
         session_token = create_otp_session(utilisateur.id, utilisateur.email, otp)
-        await _envoyer_email_otp(
+        # Envoi email en arrière-plan — ne bloque plus la réponse HTTP
+        background.add_task(
+            _envoyer_email_otp,
             destinataire = utilisateur.email,
             otp          = otp,
             prenom       = utilisateur.prenom,
@@ -249,56 +252,25 @@ async def clerk_login(
     db:   Session = Depends(get_db),
 ):
     """
-    Vérifie le token JWT signé par Clerk (RS256/JWKS),
-    puis crée ou retrouve l'utilisateur et retourne notre JWT.
+    Reçoit les données OAuth Google vérifiées par Clerk côté frontend,
+    puis crée ou retrouve l'utilisateur SGS et retourne notre JWT.
     """
-    # 1. Vérifier l'utilisateur via Clerk Backend API (CLERK_SECRET_KEY)
-    if not settings.CLERK_SECRET_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="CLERK_SECRET_KEY non configuré",
-        )
-
-    try:
-        async with httpx.AsyncClient() as client:
-            r = await client.get(
-                f"https://api.clerk.com/v1/users/{data.clerk_user_id}",
-                headers={"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"},
-                timeout=10,
-            )
-    except Exception as exc:
-        logger.error(f"[CLERK LOGIN] Erreur réseau Clerk API : {exc}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Service d'authentification Google temporairement indisponible",
-        )
-
-    if r.status_code != 200:
-        logger.error(f"[CLERK LOGIN] Clerk API {r.status_code}: {r.text}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Utilisateur Google invalide ou introuvable",
-        )
-
-    clerk_user = r.json()
-
-    # 2. Extraire l'email vérifié depuis Clerk
-    primary_id = clerk_user.get("primary_email_address_id")
-    email = next(
-        (e["email_address"] for e in clerk_user.get("email_addresses", [])
-         if e["id"] == primary_id),
-        data.email.lower().strip(),
-    )
+    # 1. Valider les données reçues du frontend
+    email = (data.email or "").lower().strip()
     if not email or "@" not in email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email invalide")
 
-    prenom = clerk_user.get("first_name") or data.prenom or email.split("@")[0]
-    nom    = clerk_user.get("last_name")  or data.nom or ""
+    if not data.clerk_user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Identifiant Google manquant")
 
-    # 3. Trouver ou créer l'utilisateur
+    prenom = data.prenom or email.split("@")[0]
+    nom    = data.nom    or ""
+
+    logger.info(f"[CLERK LOGIN] Tentative — clerk_id={data.clerk_user_id} email={email}")
+
+    # 2. Trouver ou créer l'utilisateur SGS (actif ou inactif)
     utilisateur = db.query(models.Utilisateur).filter(
-        models.Utilisateur.email     == email,
-        models.Utilisateur.est_actif == True,
+        models.Utilisateur.email == email,
     ).first()
 
     if not utilisateur:
@@ -313,8 +285,17 @@ async def clerk_login(
         db.commit()
         db.refresh(utilisateur)
         logger.info(f"[CLERK LOGIN] Nouvel utilisateur Google créé : {email}")
+    else:
+        # Réactiver si désactivé, mettre à jour les infos Google
+        if not utilisateur.est_actif:
+            utilisateur.est_actif = True
+        utilisateur.prenom = utilisateur.prenom or prenom
+        utilisateur.nom    = utilisateur.nom    or nom
+        db.commit()
+        db.refresh(utilisateur)
+        logger.info(f"[CLERK LOGIN] Utilisateur existant connecté : {email} (id={utilisateur.id})")
 
-    # 4. Retourner notre JWT
+    # 3. Retourner notre JWT SGS
     token = create_access_token({
         "user_id": utilisateur.id,
         "email":   utilisateur.email,

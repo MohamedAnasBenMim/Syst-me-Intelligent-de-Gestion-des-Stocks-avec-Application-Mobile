@@ -79,7 +79,7 @@ ${alertesData.slice(0, 15).map(a =>
   // Historique retourne: valeur_stock, profit, total_depenses, calcule_le, statut
   // La réponse directe retourne aussi chiffre_affaires, marge_brute, taux_marge
   const plBlock = lastPL ? (() => {
-    const ca    = lastPL.valeur_stock ?? 0
+    const ca    = (lastPL.chiffre_affaires > 0 ? lastPL.chiffre_affaires : lastPL.valeur_stock) ?? 0
     const net   = lastPL.profit ?? 0
     const dep   = lastPL.total_depenses ?? 0
     const marge = ca > 0 ? ((net / ca) * 100).toFixed(1) + '%' : 'Non calculable'

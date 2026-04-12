@@ -28,8 +28,8 @@ export default function Navbar() {
 
         {/* LINKS */}
         <ul className="navbar-links">
-          {links.map(l => (
-            <li key={l}>
+          {links.map((l, i) => (
+            <li key={i}>
               <a href={`#${l.toLowerCase()}`}>{l}</a>
             </li>
           ))}
