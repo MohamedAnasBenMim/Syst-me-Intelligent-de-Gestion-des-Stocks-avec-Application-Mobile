@@ -84,9 +84,10 @@ function buildBarData(mouvements) {
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
     const bucket = months.find(b => b.key === key)
     if (!bucket) continue
-    if (m.type_mouvement === 'entree')    bucket.entrees++
-    else if (m.type_mouvement === 'sortie')    bucket.sorties++
-    else if (m.type_mouvement === 'transfert') bucket.transferts++
+    const type = (m.type_mouvement || '').toLowerCase()
+    if (type === 'entree')         bucket.entrees++
+    else if (type === 'sortie')    bucket.sorties++
+    else if (type === 'transfert') bucket.transferts++
   }
   return months
 }
@@ -154,7 +155,7 @@ function EntrepotOccupation({ entrepots }) {
         const nonConfiguree = capaciteMax > 0 && capaciteMax < stockReel
         // Utiliser le stock comme base si capacite_max est invalide
         const base  = nonConfiguree ? stockReel : capaciteMax
-        const taux  = base > 0 ? Math.min(Math.round(stockReel / base * 100), 100) : 0
+        const taux  = base > 0 ? Math.min(parseFloat((stockReel / base * 100).toFixed(1)), 100) : 0
         const barColor = nonConfiguree ? '#9CA3AF'
           : taux >= 85 ? '#EF4444'
           : taux >= 60 ? '#F59E0B'
@@ -438,10 +439,11 @@ const typeCfg = {
   transfert: { color: '#6366F1', bg: '#EEF2FF', label: 'TRANSFERT', sign: ''  },
 }
 function MouvRow({ m }) {
-  const cfg = typeCfg[m.type_mouvement] || typeCfg.entree
-  const entrepot = m.type_mouvement === 'entree'
+  const type = (m.type_mouvement || '').toLowerCase()
+  const cfg = typeCfg[type] || typeCfg.entree
+  const entrepot = type === 'entree'
     ? m.entrepot_dest_nom
-    : m.type_mouvement === 'sortie'
+    : type === 'sortie'
     ? m.entrepot_source_nom
     : `${m.entrepot_source_nom || ''}→${m.entrepot_dest_nom || ''}`
 
@@ -527,33 +529,44 @@ export default function Dashboard() {
   const [alertPopup,  setAlertPopup]  = useState(null)   // alerte critique à afficher
 
   useEffect(() => {
+    // Timeout de sécurité — affiche le dashboard après 4s même si les services sont lents
+    const safetyTimer = setTimeout(() => setLoading(false), 4000)
+
+    // Phase 1 — données légères → affichage immédiat
     Promise.allSettled([
-      getDashboard(),
       getAlertes({ statut: 'ACTIVE', per_page: 6 }),
-      getMouvements({ per_page: 100 }),
+      getMouvements({ per_page: 500 }),
       getEntrepots(),
-      user?.role === 'admin' ? getUtilisateurs() : Promise.resolve([]),
-      getPrevisionsML(),
-      (user?.role === 'admin' || user?.role === 'gestionnaire') ? getHistoriquePL({ limit: 1 }) : Promise.resolve(null),
-    ]).then(([d, a, m, e, u, p, pl]) => {
-      if (d.status === 'fulfilled') setDash(d.value)
+    ]).then(([a, m, e]) => {
       if (a.status === 'fulfilled') {
         const list = a.value?.alertes || []
         setAlertes(list)
-        // Afficher popup pour la première alerte critique
         const crit = list.find(al => ['CRITIQUE','RUPTURE','critique','rupture'].includes(al.niveau))
         if (crit) setAlertPopup(crit)
       }
       if (m.status === 'fulfilled') setMouvs(m.value?.mouvements || [])
       if (e.status === 'fulfilled') setEntrepots(Array.isArray(e.value) ? e.value : e.value?.entrepots || [])
+      clearTimeout(safetyTimer)
+      setLoading(false)
+    })
+
+    // Phase 2 — données lourdes en arrière-plan (KPI, ML, P&L, utilisateurs)
+    Promise.allSettled([
+      getDashboard(),
+      user?.role === 'admin' ? getUtilisateurs() : Promise.resolve([]),
+      getPrevisionsML(),
+      (user?.role === 'admin' || user?.role === 'gestionnaire') ? getHistoriquePL({ limit: 1 }) : Promise.resolve(null),
+    ]).then(([d, u, p, pl]) => {
+      if (d.status === 'fulfilled') setDash(d.value)
       if (u.status === 'fulfilled') setUsers(Array.isArray(u.value) ? u.value.slice(0, 4) : [])
       if (p.status === 'fulfilled') setPrevisions(Array.isArray(p.value) ? p.value : [])
       if (pl.status === 'fulfilled' && pl.value) {
         const hist = Array.isArray(pl.value) ? pl.value : pl.value?.historique || []
         if (hist.length > 0) setLastPL(hist[0])
       }
-      setLoading(false)
     })
+
+    return () => clearTimeout(safetyTimer)
   }, [user?.role])
 
   const kpi         = dash?.kpi
@@ -628,10 +641,10 @@ export default function Dashboard() {
                   </button>
                 </div>
                 {lastPL ? (() => {
-                  const ca    = lastPL.chiffre_affaires > 0 ? lastPL.chiffre_affaires : null
-                  const base  = ca ?? lastPL.valeur_stock
-                  const marge = lastPL.profit
-                  const taux  = base > 0 ? ((lastPL.profit / base) * 100).toFixed(1) : null
+                  const ca     = lastPL.chiffre_affaires > 0 ? lastPL.chiffre_affaires : lastPL.valeur_stock
+                  const caLabel = lastPL.chiffre_affaires > 0 ? "Chiffre d'affaires" : 'Valeur du stock'
+                  const marge  = lastPL.marge_brute ?? lastPL.profit
+                  const taux   = lastPL.taux_marge > 0 ? lastPL.taux_marge.toFixed(1) : (ca > 0 ? ((lastPL.profit / ca) * 100).toFixed(1) : null)
                   return (
                   <div className="pl-dashboard-grid">
                     {/* CA réel ou Valeur du stock */}
@@ -639,15 +652,10 @@ export default function Dashboard() {
                       <div className="pl-dash-icon" style={{ background: '#EEF2FF' }}>
                         <Package size={18} color="#6366F1" />
                       </div>
-                      <div className="pl-dash-label">
-                        {ca ? 'Chiffre d\'affaires (sorties)' : 'Valeur du stock'}
-                      </div>
+                      <div className="pl-dash-label">{caLabel}</div>
                       <div className="pl-dash-value" style={{ color: '#6366F1' }}>
-                        {fmtCurrency(ca ?? lastPL.valeur_stock)}
+                        {fmtCurrency(ca)}
                       </div>
-                      {ca && (
-                        <div className="pl-dash-sub">Stock : {fmtCurrency(lastPL.valeur_stock)}</div>
-                      )}
                     </div>
                     {/* Total dépenses */}
                     <div className="pl-dash-card">
@@ -917,7 +925,7 @@ export default function Dashboard() {
                   <div className="value-big">{fmtCurrency(kpi?.valeur_stock_total)}</div>
                   {(() => {
                     const taux = kpi?.taux_occupation_moyen || 0
-                    const tauxAffiche = Math.min(Math.round(taux), 100)
+                    const tauxAffiche = Math.min(parseFloat(taux.toFixed(1)), 100)
                     const nonConfig   = taux > 100
                     return (
                       <>
@@ -953,9 +961,11 @@ export default function Dashboard() {
                         <div className="value-sub">
                           Stock : {fmtCurrency(lastPL.valeur_stock)} · Charges : {fmtCurrency(lastPL.total_depenses)}
                         </div>
-                        {lastPL.valeur_stock > 0 && (
+                        {lastPL.total_depenses > 0 && (
                           <div className="value-sub">
-                            Marge : {((lastPL.profit / lastPL.valeur_stock) * 100).toFixed(1)}%
+                            Marge : {(lastPL.profit + lastPL.total_depenses) > 0
+                              ? ((lastPL.profit / (lastPL.profit + lastPL.total_depenses)) * 100).toFixed(1)
+                              : '0.0'}%
                           </div>
                         )}
                       </>

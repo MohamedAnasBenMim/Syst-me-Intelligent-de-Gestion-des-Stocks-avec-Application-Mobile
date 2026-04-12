@@ -130,17 +130,23 @@ export default function DashboardLayout({ children }) {
 
     fetchAlertCount()
     fetchNotifCount()
-    scanExpirations()   // scan immédiat au chargement
+    // scanExpirations() lancé après 2 min pour ne pas bloquer le chargement initial
+    const scanDelay    = setTimeout(scanExpirations, 120_000)
 
     const alertInterval = setInterval(fetchAlertCount,  30_000)
     const notifInterval = setInterval(fetchNotifCount,  60_000)
     const expInterval   = setInterval(scanExpirations, 600_000) // toutes les 10 min
-    return () => { clearInterval(alertInterval); clearInterval(notifInterval); clearInterval(expInterval) }
+    return () => {
+      clearTimeout(scanDelay)
+      clearInterval(alertInterval)
+      clearInterval(notifInterval)
+      clearInterval(expInterval)
+    }
   }, [fetchAlertCount, fetchNotifCount, scanExpirations])
 
   async function handleLogout() {
+    try { await clerkSignOut() } catch (_) {}
     logout()
-    await clerkSignOut()
     navigate('/login', { replace: true })
   }
 

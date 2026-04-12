@@ -44,6 +44,15 @@ class ProduitCreate(BaseModel):
             raise ValueError("seuil_max doit être supérieur à seuil_min")
         return v
 
+    @field_validator("date_expiration")
+    @classmethod
+    def expiration_future(cls, v):
+        if v is not None and v <= date.today():
+            raise ValueError(
+                "La date d'expiration doit être strictement postérieure à aujourd'hui"
+            )
+        return v
+
     @field_validator("reference")
     @classmethod
     def reference_uppercase(cls, v):

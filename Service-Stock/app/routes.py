@@ -123,9 +123,10 @@ async def list_produits(
     summary="Créer un nouveau produit",
 )
 async def create_produit(
-    data:  schemas.ProduitCreate,
-    db:    Session = Depends(get_db),
-    _user: dict    = Depends(admin_or_manager),
+    data:        schemas.ProduitCreate,
+    db:          Session                      = Depends(get_db),
+    _user:       dict                         = Depends(admin_or_manager),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
     # ── Auto-générer la référence si non fournie ───────────
     reference = data.reference
@@ -148,6 +149,33 @@ async def create_produit(
     db.add(produit)
     db.commit()
     db.refresh(produit)
+
+    # ── Déclencher alerte expiration si la date est dans les 30 prochains jours ──
+    if produit.date_expiration:
+        jours = (produit.date_expiration - date.today()).days
+        if 0 <= jours <= 30:
+            message = (
+                f"📅 EXPIRATION PROCHE — {produit.designation} — "
+                f"Date d'expiration : {produit.date_expiration} (dans {jours} jour(s)) — "
+                f"Recommandation : surveiller le stock et envisager une promotion."
+            )
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    await client.post(
+                        f"{settings.ALERT_SERVICE_URL}/api/v1/alertes/declencher",
+                        json={
+                            "produit_id":   produit.id,
+                            "produit_nom":  produit.designation,
+                            "entrepot_id":  0,  # produit sans stock encore — entrepôt inconnu
+                            "niveau":       "EXPIRATION_PROCHE",
+                            "quantite_actuelle": 0,
+                            "message":      message,
+                        },
+                        headers={"Authorization": f"Bearer {credentials.credentials}"},
+                    )
+            except Exception as e:
+                logger.warning(f"Alerte expiration non envoyée : {e}")
+
     return produit
 
 

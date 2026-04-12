@@ -459,8 +459,9 @@ async def verifier_expirations_stock(
             continue
 
         jours_restants = (date_exp - today).days
-        if jours_restants <= 0 or jours_restants > seuil_jours:
-            continue  # déjà expiré ou loin de l'échéance
+        if jours_restants < 0 or jours_restants > seuil_jours:
+            continue  # déjà expiré (hier ou avant) ou loin de l'échéance
+        # jours_restants == 0 → expire aujourd'hui → on alerte
 
         produits_analyses += 1
         produit_id  = produit.get("id")
