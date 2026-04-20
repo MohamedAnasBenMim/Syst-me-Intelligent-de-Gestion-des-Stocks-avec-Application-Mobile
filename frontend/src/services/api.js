@@ -595,3 +595,104 @@ export async function appliquerIAPromotion(data) {
   })
   return handleResponse(res)
 }
+
+// ════════════════════════════════════════════════════════════
+// FOURNISSEURS — port 8003
+// ════════════════════════════════════════════════════════════
+
+export async function getFournisseurs(params = {}) {
+  const res = await fetch(`${STOCK_URL}/fournisseurs${qs(params)}`, { headers: bearerHeader() })
+  return handleResponse(res)
+}
+
+export async function getFournisseur(id) {
+  const res = await fetch(`${STOCK_URL}/fournisseurs/${id}`, { headers: bearerHeader() })
+  return handleResponse(res)
+}
+
+export async function createFournisseur(data) {
+  const res = await fetch(`${STOCK_URL}/fournisseurs`, {
+    method: 'POST', headers: authHeader(), body: JSON.stringify(data),
+  })
+  return handleResponse(res)
+}
+
+export async function updateFournisseur(id, data) {
+  const res = await fetch(`${STOCK_URL}/fournisseurs/${id}`, {
+    method: 'PUT', headers: authHeader(), body: JSON.stringify(data),
+  })
+  return handleResponse(res)
+}
+
+export async function deleteFournisseur(id) {
+  const res = await fetch(`${STOCK_URL}/fournisseurs/${id}`, {
+    method: 'DELETE', headers: bearerHeader(),
+  })
+  return handleResponse(res)
+}
+
+export async function getFournisseurProduits(id) {
+  const res = await fetch(`${STOCK_URL}/fournisseurs/${id}/produits`, { headers: bearerHeader() })
+  return handleResponse(res)
+}
+
+export async function lierProduitFournisseur(fournisseurId, data) {
+  const res = await fetch(`${STOCK_URL}/fournisseurs/${fournisseurId}/produits`, {
+    method: 'POST', headers: authHeader(), body: JSON.stringify(data),
+  })
+  return handleResponse(res)
+}
+
+export async function delierProduitFournisseur(fournisseurId, produitId) {
+  const res = await fetch(`${STOCK_URL}/fournisseurs/${fournisseurId}/produits/${produitId}`, {
+    method: 'DELETE', headers: bearerHeader(),
+  })
+  return handleResponse(res)
+}
+
+// ════════════════════════════════════════════════════════════
+// ENTREPÔTS ARBRE — port 8002
+// ════════════════════════════════════════════════════════════
+
+export async function getEntrepotsTree() {
+  const res = await fetch(`${WAREHOUSE_URL}/entrepots/tree`, { headers: bearerHeader() })
+  return handleResponse(res)
+}
+
+// ════════════════════════════════════════════════════════════
+// IA — NOUVELLES ROUTES (marge, timing, fournisseurs)
+// ════════════════════════════════════════════════════════════
+
+export async function vectoriserFournisseurs() {
+  const res = await fetch(`${IA_URL}/ia/embedding/vectoriser-fournisseurs`, {
+    method: 'POST', headers: bearerHeader(),
+  })
+  return handleResponse(res)
+}
+
+export async function vectoriserMarches() {
+  const res = await fetch(`${IA_URL}/ia/embedding/vectoriser-marches`, {
+    method: 'POST', headers: bearerHeader(),
+  })
+  return handleResponse(res)
+}
+
+export async function analyserMarge(produitId) {
+  const res = await fetch(`${IA_URL}/ia/marges/analyser?produit_id=${produitId}`, {
+    method: 'POST', headers: bearerHeader(),
+  })
+  return handleResponse(res)
+}
+
+export async function timingMarche(produitId) {
+  const res = await fetch(`${IA_URL}/ia/marche/timing?produit_id=${produitId}`, {
+    method: 'POST', headers: bearerHeader(),
+  })
+  return handleResponse(res)
+}
+
+export async function performanceFournisseurs() {
+  const res = await fetch(`${IA_URL}/ia/fournisseurs/performance`, { headers: bearerHeader() })
+  return handleResponse(res)
+}
+

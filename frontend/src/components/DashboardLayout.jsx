@@ -4,7 +4,7 @@ import {
   Layers, ArrowLeftRight, Bell, Mail, RefreshCw,
   BarChart2, Settings, LogOut, Brain,
   Warehouse, ShoppingCart, Users, Search, ChevronDown, Tag,
-  AlertTriangle, X, Package,
+  AlertTriangle, X, Package, Truck,
 } from 'lucide-react'
 import logoImg from '../assets/becarthai-logo.jpg'
 import { useAuth } from '../context/AuthContext'
@@ -18,6 +18,7 @@ const navItems = [
   { to: '/dashboard/produits',             icon: ShoppingCart,   label: 'Produits'            },
   { to: '/dashboard/stocks',               icon: Package,        label: 'Stocks'              },
   { to: '/dashboard/mouvements',           icon: ArrowLeftRight, label: 'Mouvements'          },
+  { to: '/dashboard/fournisseurs',         icon: Truck,          label: 'Fournisseurs'         },
   { to: '/dashboard/alertes',              icon: Bell,           label: 'Alertes',   badge: 'alertes'  },
   { to: '/dashboard/notifications',        icon: Mail,           label: 'Notifications', badge: 'notifs' },
   { to: '/dashboard/reapprovisionnement',  icon: RefreshCw,      label: 'Réapprovisionnement' },
@@ -33,6 +34,7 @@ const PAGE_TITLES = {
   '/dashboard/produits':            { title: 'Produits',        sub: 'SGS SaaS > Produits' },
   '/dashboard/stocks':              { title: 'Stocks',          sub: 'SGS SaaS > Stocks' },
   '/dashboard/mouvements':          { title: 'Mouvements',      sub: 'SGS SaaS > Mouvements' },
+  '/dashboard/fournisseurs':        { title: 'Fournisseurs',    sub: 'SGS SaaS > Fournisseurs' },
   '/dashboard/alertes':             { title: 'Alertes',         sub: 'SGS SaaS > Alertes' },
   '/dashboard/notifications':       { title: 'Notifications',   sub: 'SGS SaaS > Notifications' },
   '/dashboard/reapprovisionnement': { title: 'Réapprovisionnement', sub: 'SGS SaaS > Réapprovisionnement' },

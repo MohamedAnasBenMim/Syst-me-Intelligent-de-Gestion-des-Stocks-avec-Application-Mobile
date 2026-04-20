@@ -38,10 +38,10 @@ function PerimeCard({ p, onIaClick }) {
         {!isExpire && !isUrgent && <span className="perime-tag perime-tag--warn">À surveiller</span>}
       </div>
       <div className="perime-meta">
-        {p.categorie && <span>📦 {p.categorie}</span>}
-        {p.quantite != null && <span>📊 {p.quantite} unités</span>}
-        {p.prix_unitaire != null && <span>💰 {fmtTND(p.prix_unitaire)}</span>}
-        {p.date_expiration && <span>📅 Exp: {fmtDate(p.date_expiration)}</span>}
+        {p.categorie && <span>{p.categorie}</span>}
+        {p.quantite != null && <span>{p.quantite} unités</span>}
+        {p.prix_unitaire != null && <span>{fmtTND(p.prix_unitaire)}</span>}
+        {p.date_expiration && <span>Exp: {fmtDate(p.date_expiration)}</span>}
         {p.jours_restants != null && (
           <span style={{ color: isExpire ? '#EF4444' : isUrgent ? '#F59E0B' : '#6B7280', fontWeight: 600 }}>
             {isExpire ? `Expiré depuis ${Math.abs(p.jours_restants)}j` : `J-${p.jours_restants}`}

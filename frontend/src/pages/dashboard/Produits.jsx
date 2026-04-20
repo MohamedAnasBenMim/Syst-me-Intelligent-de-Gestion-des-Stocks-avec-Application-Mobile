@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Package, Plus, Pencil, Trash2, Loader, X, Check, AlertTriangle, Search } from 'lucide-react'
 import DashboardLayout from '../../components/DashboardLayout'
 import { useAuth } from '../../context/AuthContext'
-import { getProduits, createProduit, updateProduit, deleteProduit, getStocks, verifierExpirations } from '../../services/api'
+import { getProduits, createProduit, updateProduit, deleteProduit, getStocks, verifierExpirations, getFournisseurs, getFournisseurProduits } from '../../services/api'
 import './common.css'
 
 // ── Helpers dates ──────────────────────────────────────────
@@ -23,24 +23,61 @@ function dateStatus(dateStr) {
   return               { label: fmtDate(dateStr),                       color: '#28A745', bg: '#F0FDF4' }
 }
 
+// ── Badge marge ─────────────────────────────────────────────
+function BadgeMarge({ marge, type_produit, avertissement }) {
+  if (marge == null) return null
+  const ok = type_produit === 'NON_CONSOMMABLE' ? (marge >= 25 && marge <= 80) : (marge >= 5 && marge <= 25)
+  const color = ok ? '#16a34a' : '#d97706'
+  return (
+    <span title={avertissement || ''} style={{
+      background: color + '18', color, borderRadius: 6,
+      padding: '2px 8px', fontSize: 12, fontWeight: 700,
+      cursor: avertissement ? 'help' : 'default',
+    }}>
+      {marge.toFixed(1)}% {avertissement ? '⚠️' : ''}
+    </span>
+  )
+}
+
 // ── Modal Créer / Modifier ──────────────────────────────────
 function ProduitModal({ mode, initial, onClose, onSaved }) {
   const isCreate = mode === 'create'
   const [form, setForm] = useState({
-    reference:         initial?.reference         || '',
-    designation:       initial?.designation       || '',
-    categorie:         initial?.categorie         || '',
-    unite_mesure:      initial?.unite_mesure      || 'unite',
-    prix_unitaire:     initial?.prix_unitaire     ?? '',
-    seuil_alerte_min:  initial?.seuil_alerte_min  ?? '',
-    seuil_alerte_max:  initial?.seuil_alerte_max  ?? '',
-    date_fabrication:  initial?.date_fabrication  || '',
-    date_expiration:   initial?.date_expiration   || '',
+    reference:            initial?.reference            || '',
+    designation:          initial?.designation          || '',
+    categorie:            initial?.categorie            || '',
+    unite_mesure:         initial?.unite_mesure         || 'unite',
+    prix_unitaire:        initial?.prix_unitaire        ?? '',
+    prix_achat:           initial?.prix_achat           ?? '',
+    prix_vente:           initial?.prix_vente           ?? '',
+    type_produit:         initial?.type_produit         || 'CONSOMMABLE',
+    pattern_vente:        initial?.pattern_vente        || '',
+    mois_debut_vente:     initial?.mois_debut_vente     ?? '',
+    mois_fin_vente:       initial?.mois_fin_vente       ?? '',
+    jours_pour_vendre:    initial?.jours_pour_vendre    ?? '',
+    meilleur_moment_achat:initial?.meilleur_moment_achat|| '',
+    seuil_alerte_min:     initial?.seuil_alerte_min     ?? '',
+    seuil_alerte_max:     initial?.seuil_alerte_max     ?? '',
+    date_fabrication:     initial?.date_fabrication     || '',
+    date_expiration:      initial?.date_expiration      || '',
   })
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState(null)
 
   function set(field, val) { setForm(f => ({ ...f, [field]: val })) }
+
+  // Calcul marge en temps réel
+  const margePreview = (form.prix_achat !== '' && form.prix_vente !== '' && Number(form.prix_achat) > 0)
+    ? (((Number(form.prix_vente) - Number(form.prix_achat)) / Number(form.prix_achat)) * 100).toFixed(1)
+    : null
+
+  const margeOk = margePreview != null && (
+    form.type_produit === 'NON_CONSOMMABLE'
+      ? (margePreview >= 25 && margePreview <= 80)
+      : (margePreview >= 5  && margePreview <= 25)
+  )
+
+  const saisonnel = form.pattern_vente === 'SAISONNIER' || form.pattern_vente === 'OCCASIONNEL'
 
   async function submit(e) {
     e.preventDefault()
@@ -48,14 +85,22 @@ function ProduitModal({ mode, initial, onClose, onSaved }) {
     setLoading(true)
     try {
       const payload = {
-        designation:      form.designation,
-        categorie:        form.categorie        || undefined,
-        unite_mesure:     form.unite_mesure     || 'unite',
-        prix_unitaire:    form.prix_unitaire    !== '' ? Number(form.prix_unitaire)    : undefined,
-        seuil_alerte_min: form.seuil_alerte_min !== '' ? Number(form.seuil_alerte_min) : undefined,
-        seuil_alerte_max: form.seuil_alerte_max !== '' ? Number(form.seuil_alerte_max) : undefined,
-        date_fabrication: form.date_fabrication || undefined,
-        date_expiration:  form.date_expiration  || undefined,
+        designation:           form.designation,
+        categorie:             form.categorie             || undefined,
+        unite_mesure:          form.unite_mesure          || 'unite',
+        prix_unitaire:         form.prix_unitaire         !== '' ? Number(form.prix_unitaire)    : undefined,
+        prix_achat:            form.prix_achat            !== '' ? Number(form.prix_achat)        : undefined,
+        prix_vente:            form.prix_vente            !== '' ? Number(form.prix_vente)        : undefined,
+        type_produit:          form.type_produit          || 'CONSOMMABLE',
+        pattern_vente:         form.pattern_vente         || undefined,
+        mois_debut_vente:      form.mois_debut_vente      !== '' ? Number(form.mois_debut_vente)  : undefined,
+        mois_fin_vente:        form.mois_fin_vente        !== '' ? Number(form.mois_fin_vente)    : undefined,
+        jours_pour_vendre:     form.jours_pour_vendre     !== '' ? Number(form.jours_pour_vendre) : undefined,
+        meilleur_moment_achat: form.meilleur_moment_achat || undefined,
+        seuil_alerte_min:      form.seuil_alerte_min      !== '' ? Number(form.seuil_alerte_min)  : undefined,
+        seuil_alerte_max:      form.seuil_alerte_max      !== '' ? Number(form.seuil_alerte_max)  : undefined,
+        date_fabrication:      form.date_fabrication      || undefined,
+        date_expiration:       form.date_expiration       || undefined,
       }
       if (isCreate) payload.reference = form.reference
 
@@ -138,54 +183,126 @@ function ProduitModal({ mode, initial, onClose, onSaved }) {
 
           <div className="form-row3">
             <div className="form-group">
-              <label>Prix unitaire (MAD)</label>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.prix_unitaire}
-                onChange={e => set('prix_unitaire', e.target.value)}
-                placeholder="0.00"
-              />
+              <label>Prix unitaire (TND)</label>
+              <input type="number" min="0" step="0.01" value={form.prix_unitaire}
+                onChange={e => set('prix_unitaire', e.target.value)} placeholder="0.00" />
             </div>
             <div className="form-group">
               <label>Seuil alerte min</label>
-              <input
-                type="number"
-                min="0"
-                value={form.seuil_alerte_min}
-                onChange={e => set('seuil_alerte_min', e.target.value)}
-                placeholder="Ex: 10"
-              />
+              <input type="number" min="0" value={form.seuil_alerte_min}
+                onChange={e => set('seuil_alerte_min', e.target.value)} placeholder="Ex: 10" />
             </div>
             <div className="form-group">
               <label>Seuil alerte max</label>
-              <input
-                type="number"
-                min="0"
-                value={form.seuil_alerte_max}
-                onChange={e => set('seuil_alerte_max', e.target.value)}
-                placeholder="Ex: 500"
-              />
+              <input type="number" min="0" value={form.seuil_alerte_max}
+                onChange={e => set('seuil_alerte_max', e.target.value)} placeholder="Ex: 500" />
             </div>
           </div>
+
+          {/* ── Classification & Prix ── */}
+          <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#374151', marginBottom: 12 }}>
+              Classification & Marge
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Type de produit</label>
+                <select value={form.type_produit} onChange={e => set('type_produit', e.target.value)}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 14 }}>
+                  <option value="CONSOMMABLE">Consommable (marge 5-25%)</option>
+                  <option value="NON_CONSOMMABLE">Non consommable (marge 25-80%)</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label>Pattern de vente</label>
+                <select value={form.pattern_vente} onChange={e => set('pattern_vente', e.target.value)}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 14 }}>
+                  <option value="">— Non défini —</option>
+                  <option value="REGULIER">Régulier (toute l'année)</option>
+                  <option value="SAISONNIER">Saisonnier</option>
+                  <option value="OCCASIONNEL">Occasionnel (événement)</option>
+                </select>
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Prix d'achat (TND)</label>
+                <input type="number" min="0" step="0.01" value={form.prix_achat}
+                  onChange={e => set('prix_achat', e.target.value)} placeholder="0.00" />
+              </div>
+              <div className="form-group">
+                <label>Prix de vente (TND)</label>
+                <input type="number" min="0" step="0.01" value={form.prix_vente}
+                  onChange={e => set('prix_vente', e.target.value)} placeholder="0.00" />
+              </div>
+            </div>
+            {margePreview != null && (
+              <div style={{
+                padding: '10px 14px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+                background: margeOk ? '#f0fdf4' : '#fffbeb',
+                color: margeOk ? '#16a34a' : '#d97706',
+                border: `1px solid ${margeOk ? '#bbf7d0' : '#fde68a'}`,
+              }}>
+                {margeOk ? '✓' : '⚠️'} Marge calculée : {margePreview}%
+                {!margeOk && (
+                  <span style={{ marginLeft: 8, fontWeight: 400 }}>
+                    (plage recommandée : {form.type_produit === 'NON_CONSOMMABLE' ? '25-80%' : '5-25%'})
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* ── Champs saisonnier/occasionnel ── */}
+          {saisonnel && (
+            <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16, marginBottom: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#374151', marginBottom: 12 }}>
+                Période de vente
+              </div>
+              <div className="form-row3">
+                <div className="form-group">
+                  <label>Mois début vente</label>
+                  <select value={form.mois_debut_vente} onChange={e => set('mois_debut_vente', e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 14 }}>
+                    <option value="">—</option>
+                    {['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre']
+                      .map((m,i) => <option key={m} value={i+1}>{m}</option>)}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Mois fin vente</label>
+                  <select value={form.mois_fin_vente} onChange={e => set('mois_fin_vente', e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 14 }}>
+                    <option value="">—</option>
+                    {['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre']
+                      .map((m,i) => <option key={m} value={i+1}>{m}</option>)}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Jours pour vendre</label>
+                  <input type="number" min="1" value={form.jours_pour_vendre}
+                    onChange={e => set('jours_pour_vendre', e.target.value)} placeholder="Ex: 30" />
+                </div>
+              </div>
+              <div className="form-group">
+                <label>Meilleur moment d'achat</label>
+                <input value={form.meilleur_moment_achat}
+                  onChange={e => set('meilleur_moment_achat', e.target.value)}
+                  placeholder="Ex: 2 mois avant Ramadan" />
+              </div>
+            </div>
+          )}
 
           <div className="form-row">
             <div className="form-group">
               <label>Date de fabrication</label>
-              <input
-                type="date"
-                value={form.date_fabrication}
-                onChange={e => set('date_fabrication', e.target.value)}
-              />
+              <input type="date" value={form.date_fabrication}
+                onChange={e => set('date_fabrication', e.target.value)} />
             </div>
             <div className="form-group">
               <label>Date d'expiration</label>
-              <input
-                type="date"
-                value={form.date_expiration}
-                onChange={e => set('date_expiration', e.target.value)}
-              />
+              <input type="date" value={form.date_expiration}
+                onChange={e => set('date_expiration', e.target.value)} />
             </div>
           </div>
         </form>
@@ -257,6 +374,7 @@ export default function Produits() {
 
   const [produits,      setProduits]      = useState([])
   const [qteProduit,    setQteProduit]    = useState({})
+  const [fournMap,      setFournMap]      = useState({})
   const [loading,       setLoading]       = useState(true)
   const [error,         setError]         = useState(null)
   const [search,        setSearch]        = useState('')
@@ -271,7 +389,7 @@ export default function Produits() {
     setLoading(true)
     setError(null)
     try {
-      const [prodData, stockData] = await Promise.allSettled([getProduits(), getStocks()])
+      const [prodData, stockData, fournData] = await Promise.allSettled([getProduits(), getStocks(), getFournisseurs()])
       const prods = prodData.status === 'fulfilled' && Array.isArray(prodData.value) ? prodData.value : []
       setProduits(prods)
 
@@ -280,6 +398,20 @@ export default function Produits() {
         const qteMap = {}
         stocks.forEach(s => { qteMap[s.produit_id] = (qteMap[s.produit_id] || 0) + (s.quantite || 0) })
         setQteProduit(qteMap)
+      }
+
+      if (fournData.status === 'fulfilled') {
+        const raw = fournData.value
+        const fourns = Array.isArray(raw) ? raw : (Array.isArray(raw?.fournisseurs) ? raw.fournisseurs : [])
+        const liaisonsAll = await Promise.allSettled(fourns.map(f => getFournisseurProduits(f.id).then(ps => ({ fournNom: f.nom, ps }))))
+        const map = {}
+        liaisonsAll.forEach(r => {
+          if (r.status === 'fulfilled') {
+            const { fournNom, ps } = r.value
+            ;(Array.isArray(ps) ? ps : []).forEach(p => { if (!map[p.produit_id]) map[p.produit_id] = fournNom })
+          }
+        })
+        setFournMap(map)
       }
     } catch (err) {
       setError(err.message)
@@ -455,6 +587,8 @@ export default function Produits() {
                     <th>CATÉGORIE</th>
                     <th>UNITÉ</th>
                     <th>PRIX/U</th>
+                    <th>FOURNISSEUR</th>
+                    <th>MARGE</th>
                     <th>QUANTITÉ</th>
                     <th>SEUIL MIN</th>
                     <th>SEUIL MAX</th>
@@ -482,6 +616,12 @@ export default function Produits() {
                             ? `${Number(p.prix_unitaire).toLocaleString('fr-FR', { minimumFractionDigits: 2 })} MAD`
                             : '—'}
                         </td>
+                        <td className="text-muted" style={{ fontSize: 12 }}>
+                          {fournMap[p.id]
+                            ? <span style={{ background: '#EFF6FF', color: '#1D4ED8', borderRadius: 6, padding: '2px 7px', fontWeight: 600, fontSize: 11 }}>{fournMap[p.id]}</span>
+                            : <span style={{ color: '#9CA3AF' }}>—</span>}
+                        </td>
+                        <td><BadgeMarge marge={p.marge_calculee} type_produit={p.type_produit} avertissement={p.avertissement_marge} /></td>
                         <td style={{ fontWeight: 700, color: isLow ? '#DC3545' : '#1E1B4B' }}>
                           {qte !== null ? qte.toLocaleString('fr-FR') : '—'}
                           {isLow && <span style={{ fontSize: 10, marginLeft: 4, color: '#DC3545' }}>⚠</span>}

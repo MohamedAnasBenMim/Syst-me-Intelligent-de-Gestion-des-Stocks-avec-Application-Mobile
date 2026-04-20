@@ -6,7 +6,7 @@ import {
 import DashboardLayout from '../../components/DashboardLayout'
 import { useAuth } from '../../context/AuthContext'
 import {
-  getMouvements, createMouvement, getEntrepots, getProduits,
+  getMouvements, createMouvement, getEntrepots, getProduits, getFournisseurs,
 } from '../../services/api'
 import './common.css'
 
@@ -53,19 +53,26 @@ function CreateModal({ onClose, onCreated }) {
     quantite: '',
     entrepot_dest_id: '',
     entrepot_source_id: '',
+    fournisseur_id: '',
     motif: '',
     reference: '',
   })
-  const [produits,   setProduits]   = useState([])
-  const [entrepots,  setEntrepots]  = useState([])
+  const [produits,    setProduits]    = useState([])
+  const [entrepots,   setEntrepots]   = useState([])
+  const [fournisseurs, setFournisseurs] = useState([])
   const [loading,    setLoading]    = useState(false)
   const [loadingRef, setLoadingRef] = useState(true)
   const [error,      setError]      = useState(null)
 
   useEffect(() => {
-    Promise.allSettled([getProduits(), getEntrepots({ per_page: 50 })]).then(([p, e]) => {
+    Promise.allSettled([
+      getProduits(),
+      getEntrepots({ per_page: 50 }),
+      getFournisseurs({ per_page: 100 }),
+    ]).then(([p, e, f]) => {
       if (p.status === 'fulfilled') setProduits(Array.isArray(p.value) ? p.value : [])
       if (e.status === 'fulfilled') setEntrepots(e.value?.entrepots || [])
+      if (f.status === 'fulfilled') setFournisseurs(f.value?.fournisseurs || [])
       setLoadingRef(false)
     })
   }, [])
@@ -91,9 +98,10 @@ function CreateModal({ onClose, onCreated }) {
         produit_id: Number(form.produit_id),
         quantite: Number(form.quantite),
       }
-      if (needsDest)          body.entrepot_dest_id   = Number(form.entrepot_dest_id)
-      if (needsSource)        body.entrepot_source_id = Number(form.entrepot_source_id)
-      if (form.motif.trim())  body.motif     = form.motif.trim()
+      if (needsDest)             body.entrepot_dest_id   = Number(form.entrepot_dest_id)
+      if (needsSource)           body.entrepot_source_id = Number(form.entrepot_source_id)
+      if (form.fournisseur_id)   body.fournisseur_id     = Number(form.fournisseur_id)
+      if (form.motif.trim())     body.motif     = form.motif.trim()
       if (form.reference.trim()) body.reference = form.reference.trim()
 
       const created = await createMouvement(body)
@@ -169,6 +177,21 @@ function CreateModal({ onClose, onCreated }) {
                       <option value="">Sélectionner…</option>
                       {entrepots.map(e => (
                         <option key={e.id} value={e.id}>{e.nom || `Entrepôt #${e.id}`}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Fournisseur (entrée uniquement) */}
+                {form.type_mouvement === 'entree' && (
+                  <div className="form-group">
+                    <label>Fournisseur <span className="text-light">(optionnel)</span></label>
+                    <select value={form.fournisseur_id} onChange={e => set('fournisseur_id', e.target.value)}>
+                      <option value="">— Aucun fournisseur —</option>
+                      {fournisseurs.map(f => (
+                        <option key={f.id} value={f.id}>
+                          {f.nom}{f.ville ? ` — ${f.ville}` : ''}
+                        </option>
                       ))}
                     </select>
                   </div>

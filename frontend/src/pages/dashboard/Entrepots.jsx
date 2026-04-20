@@ -1,12 +1,12 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   Warehouse, Plus, Pencil, Trash2, Loader, X, Check,
   AlertTriangle, Search, LayoutGrid, ChevronDown, ChevronRight,
-  Package, MapPin, Phone, User,
+  Package, MapPin, Phone, User, GitBranch, List,
 } from 'lucide-react'
 import DashboardLayout from '../../components/DashboardLayout'
 import { useAuth } from '../../context/AuthContext'
-import { getEntrepots, createEntrepot, updateEntrepot, deleteEntrepot, getStocks } from '../../services/api'
+import { getEntrepots, getEntrepotsTree, createEntrepot, updateEntrepot, deleteEntrepot, getStocks } from '../../services/api'
 import './common.css'
 
 // ── Modal Créer / Modifier ──────────────────────────────────
@@ -310,6 +310,140 @@ function EntrepotDetail({ entrepot }) {
   )
 }
 
+// ── Arbre hiérarchique ──────────────────────────────────────
+const TYPE_COLORS = {
+  ROOT:    { bg: '#EEF2FF', border: '#6366F1', text: '#4338CA', dot: '#6366F1' },
+  DEPOT:   { bg: '#F0FDFA', border: '#0694A2', text: '#065F46', dot: '#0694A2' },
+  MAGASIN: { bg: '#F0FDF4', border: '#28A745', text: '#166534', dot: '#28A745' },
+}
+const TYPE_LABELS = { ROOT: 'Siège', DEPOT: 'Dépôt', MAGASIN: 'Magasin' }
+
+function TreeNode({ node, depth = 0, onEdit, onDelete, canWrite, isAdmin }) {
+  const [open, setOpen] = useState(depth < 2)
+  const hasChildren = node.enfants && node.enfants.length > 0
+  const colors = TYPE_COLORS[node.type_entrepot] || TYPE_COLORS.MAGASIN
+  const typeLabel = TYPE_LABELS[node.type_entrepot] || node.type_entrepot
+
+  return (
+    <div style={{ marginLeft: depth * 28, marginBottom: 8 }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        background: colors.bg, border: `1.5px solid ${colors.border}`,
+        borderRadius: 10, padding: '10px 14px',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+      }}>
+        {/* Toggle children */}
+        <button
+          onClick={() => setOpen(v => !v)}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            width: 24, height: 24, borderRadius: 6, flexShrink: 0,
+            background: hasChildren ? colors.border : 'transparent',
+            border: hasChildren ? 'none' : `1px solid ${colors.border}`,
+            cursor: hasChildren ? 'pointer' : 'default',
+          }}
+        >
+          {hasChildren
+            ? (open
+                ? <ChevronDown size={13} color="#fff" />
+                : <ChevronRight size={13} color="#fff" />)
+            : <span style={{ width: 8, height: 8, borderRadius: '50%', background: colors.border, display: 'block' }} />}
+        </button>
+
+        {/* Type badge */}
+        <span style={{
+          fontSize: 10, fontWeight: 700, padding: '2px 8px',
+          borderRadius: 5, background: colors.border, color: '#fff',
+          flexShrink: 0, letterSpacing: 0.5,
+        }}>{typeLabel}</span>
+
+        {/* Nom + code */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, color: '#1E1B4B', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {node.nom}
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 2 }}>
+            <span style={{ fontSize: 11, color: colors.text, fontFamily: 'monospace' }}>{node.code}</span>
+            {node.ville && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: '#6B7280' }}>
+                <MapPin size={10} /> {node.ville}
+              </span>
+            )}
+            {node.responsable && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: '#6B7280' }}>
+                <User size={10} /> {node.responsable}
+              </span>
+            )}
+            {node.latitude && node.longitude && (
+              <span style={{ fontSize: 11, color: '#9CA3AF' }}>
+                {Number(node.latitude).toFixed(4)}, {Number(node.longitude).toFixed(4)}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Capacité */}
+        {node.capacite_max > 0 && (
+          <div style={{ flexShrink: 0, textAlign: 'right', minWidth: 90 }}>
+            <div style={{ fontSize: 10, color: '#6B7280', marginBottom: 3 }}>
+              {(node.capacite_utilisee || 0).toLocaleString('fr-FR')} / {node.capacite_max.toLocaleString('fr-FR')}
+            </div>
+            <div style={{ height: 5, background: '#E9ECEF', borderRadius: 4, overflow: 'hidden' }}>
+              <div style={{
+                width: `${Math.min(node.capacite_max > 0 ? Math.round(((node.capacite_utilisee || 0) / node.capacite_max) * 100) : 0, 100)}%`,
+                height: '100%', background: colors.dot, borderRadius: 4,
+              }} />
+            </div>
+          </div>
+        )}
+
+        {/* Enfants count */}
+        {hasChildren && (
+          <span style={{ fontSize: 11, color: colors.text, fontWeight: 600, flexShrink: 0 }}>
+            {node.enfants.length} enfant{node.enfants.length > 1 ? 's' : ''}
+          </span>
+        )}
+
+        {/* Statut */}
+        <span className={`badge ${node.est_actif ? 'badge-green' : 'badge-gray'}`} style={{ flexShrink: 0, fontSize: 10 }}>
+          {node.est_actif ? 'Actif' : 'Inactif'}
+        </span>
+
+        {/* Actions */}
+        <div className="act-btn-row" style={{ flexShrink: 0 }}>
+          {canWrite && (
+            <button className="act-btn edit" title="Modifier" onClick={() => onEdit(node)}>
+              <Pencil size={13} />
+            </button>
+          )}
+          {isAdmin && (
+            <button className="act-btn del" title="Supprimer" onClick={() => onDelete(node)}>
+              <Trash2 size={13} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Enfants */}
+      {open && hasChildren && (
+        <div style={{ marginTop: 6, borderLeft: `2px dashed ${colors.border}`, marginLeft: 11, paddingLeft: 4 }}>
+          {node.enfants.map(child => (
+            <TreeNode
+              key={child.id}
+              node={child}
+              depth={depth + 1}
+              onEdit={onEdit}
+              onDelete={onDelete}
+              canWrite={canWrite}
+              isAdmin={isAdmin}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Page principale ─────────────────────────────────────────
 export default function Entrepots() {
   const { user } = useAuth()
@@ -323,8 +457,25 @@ export default function Entrepots() {
   const [expanded,    setExpanded]    = useState(new Set())
   const [modal,       setModal]       = useState(null)
   const [toast,       setToast]       = useState(null)
+  const [viewMode,    setViewMode]    = useState('list')   // 'list' | 'tree'
+  const [tree,        setTree]        = useState([])
+  const [treeLoading, setTreeLoading] = useState(false)
+  const [treeError,   setTreeError]   = useState(null)
 
   useEffect(() => { load() }, [])
+
+  const loadTree = useCallback(async () => {
+    setTreeLoading(true)
+    setTreeError(null)
+    try {
+      const data = await getEntrepotsTree()
+      setTree(Array.isArray(data) ? data : [])
+    } catch (err) {
+      setTreeError(err.message)
+    } finally {
+      setTreeLoading(false)
+    }
+  }, [])
 
   async function load() {
     setLoading(true)
@@ -436,17 +587,86 @@ export default function Entrepots() {
               placeholder="Rechercher par nom, code ou ville…"
               value={search}
               onChange={e => setSearch(e.target.value)}
+              disabled={viewMode === 'tree'}
             />
           </div>
-          {search && (
+          {search && viewMode === 'list' && (
             <button className="btn-ghost" style={{ padding: '6px 10px' }} onClick={() => setSearch('')}>
               <X size={14} />
             </button>
           )}
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+            <button
+              className={viewMode === 'list' ? 'btn-primary' : 'btn-ghost'}
+              style={{ padding: '6px 14px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}
+              onClick={() => setViewMode('list')}
+              title="Vue liste"
+            >
+              <List size={14} /> Liste
+            </button>
+            <button
+              className={viewMode === 'tree' ? 'btn-primary' : 'btn-ghost'}
+              style={{ padding: '6px 14px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}
+              onClick={() => { setViewMode('tree'); loadTree() }}
+              title="Vue arbre hiérarchique"
+            >
+              <GitBranch size={14} /> Arbre
+            </button>
+          </div>
         </div>
 
+        {/* ── Vue arbre ── */}
+        {viewMode === 'tree' && (
+          treeLoading ? (
+            <div className="data-card">
+              <div className="state-loading"><Loader size={28} className="spin" /><span>Chargement de l'arbre…</span></div>
+            </div>
+          ) : treeError ? (
+            <div className="data-card">
+              <div className="state-error"><AlertTriangle size={16} /> {treeError}</div>
+            </div>
+          ) : tree.length === 0 ? (
+            <div className="data-card">
+              <div className="state-empty">
+                <GitBranch size={40} color="#ADB5BD" />
+                <p>Aucune hiérarchie à afficher. Ajoutez des entrepôts avec des types ROOT / DÉPÔT / MAGASIN.</p>
+              </div>
+            </div>
+          ) : (
+            <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #E5E7EB', padding: '20px 20px 12px', boxShadow: '0 1px 4px rgba(0,0,0,0.05)' }}>
+              {/* Légende */}
+              <div style={{ display: 'flex', gap: 16, marginBottom: 18, flexWrap: 'wrap' }}>
+                {Object.entries(TYPE_LABELS).map(([type, label]) => {
+                  const c = TYPE_COLORS[type]
+                  return (
+                    <span key={type} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                      <span style={{ width: 10, height: 10, borderRadius: '50%', background: c.dot, display: 'inline-block' }} />
+                      <span style={{ color: c.text, fontWeight: 600 }}>{label}</span>
+                    </span>
+                  )
+                })}
+                <button className="btn-ghost" style={{ marginLeft: 'auto', padding: '3px 10px', fontSize: 12 }} onClick={loadTree}>
+                  <Loader size={12} /> Actualiser
+                </button>
+              </div>
+              {/* Noeuds racines */}
+              {tree.map(root => (
+                <TreeNode
+                  key={root.id}
+                  node={root}
+                  depth={0}
+                  onEdit={item => setModal({ type: 'edit', item })}
+                  onDelete={item => setModal({ type: 'delete', item })}
+                  canWrite={canWrite}
+                  isAdmin={isAdmin}
+                />
+              ))}
+            </div>
+          )
+        )}
+
         {/* ── Liste entrepôts ── */}
-        {loading ? (
+        {viewMode === 'list' && (loading ? (
           <div className="data-card">
             <div className="state-loading"><Loader size={28} className="spin" /><span>Chargement…</span></div>
           </div>
@@ -556,7 +776,7 @@ export default function Entrepots() {
               )
             })}
           </div>
-        )}
+        ))}
 
         {/* ── Modals ── */}
         {modal?.type === 'create' && (

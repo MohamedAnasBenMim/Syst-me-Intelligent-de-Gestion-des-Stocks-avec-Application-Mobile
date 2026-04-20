@@ -39,6 +39,7 @@ import Notifications       from './pages/dashboard/Notifications'
 import Reporting           from './pages/dashboard/Reporting'
 import Parametres          from './pages/dashboard/Parametres'
 import Promotions          from './pages/dashboard/Promotions'
+import Fournisseurs        from './pages/dashboard/Fournisseurs'
 
 function LandingPage() {
   return (
@@ -119,6 +120,9 @@ export default function App() {
             } />
             <Route path="/dashboard/parametres" element={
               <PrivateRoute><Parametres /></PrivateRoute>
+            } />
+            <Route path="/dashboard/fournisseurs" element={
+              <PrivateRoute><Fournisseurs /></PrivateRoute>
             } />
           </Routes>
         </AuthProvider>
