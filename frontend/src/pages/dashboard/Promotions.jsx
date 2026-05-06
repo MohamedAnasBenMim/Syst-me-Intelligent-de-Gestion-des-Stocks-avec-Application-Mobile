@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   Tag, Brain, Loader, AlertTriangle, RefreshCw, Plus, X,
-  Check, Flame, Zap, ChevronDown, ChevronUp, Trash2,
+  Check, Flame, Zap, ChevronDown, ChevronUp, Trash2, Pencil,
 } from 'lucide-react'
 import DashboardLayout from '../../components/DashboardLayout'
 import { useAuth } from '../../context/AuthContext'
@@ -120,6 +120,77 @@ function IaPanel({ reco, produit, onAppliquer, onFermer, applying }) {
   )
 }
 
+// ── Modal édition promotion ───────────────────────────────────
+function EditPromotionModal({ promo, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    pourcentage_reduction: promo.pourcentage_reduction ?? '',
+    motif:    promo.motif   ?? '',
+    date_fin: promo.date_fin ? promo.date_fin.split('T')[0] : '',
+  })
+  const [loading, setLoading] = useState(false)
+  const [error,   setError]   = useState(null)
+
+  function set(k, v) { setForm(f => ({ ...f, [k]: v })) }
+
+  async function submit(e) {
+    e.preventDefault()
+    setError(null)
+    setLoading(true)
+    try {
+      const saved = await updatePromotion(promo.id, {
+        pourcentage_reduction: parseFloat(form.pourcentage_reduction),
+        motif:    form.motif   || null,
+        date_fin: form.date_fin || null,
+      })
+      onSaved(saved)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-header">
+          <h2>Modifier la promotion — {promo.produit_nom}</h2>
+          <button className="modal-close" onClick={onClose}><X size={18} /></button>
+        </div>
+        <form className="modal-body" onSubmit={submit}>
+          {error && <div className="form-err"><AlertTriangle size={14} /> {error}</div>}
+          <div className="form-row">
+            <div className="form-group">
+              <label>Réduction (%) <span className="req">*</span></label>
+              <input type="number" min="1" max="100" step="0.5"
+                value={form.pourcentage_reduction}
+                onChange={e => set('pourcentage_reduction', e.target.value)}
+                required />
+            </div>
+            <div className="form-group">
+              <label>Date fin (optionnel)</label>
+              <input type="date" value={form.date_fin}
+                onChange={e => set('date_fin', e.target.value)} />
+            </div>
+          </div>
+          <div className="form-group">
+            <label>Motif</label>
+            <input value={form.motif}
+              onChange={e => set('motif', e.target.value)}
+              placeholder="Ex: Expiration proche, Liquidation saisonnière" />
+          </div>
+          <div className="modal-footer">
+            <button type="button" className="btn-ghost" onClick={onClose}>Annuler</button>
+            <button type="submit" className="btn-primary" disabled={loading}>
+              {loading ? <><Loader size={14} className="spin" /> Enregistrement…</> : <><Check size={14} /> Enregistrer</>}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 // ── Modal promotion manuelle ──────────────────────────────────
 function PromotionModal({ produits, onClose, onSaved }) {
   const [form, setForm] = useState({
@@ -222,6 +293,7 @@ export default function Promotions() {
   const [applying,    setApplying]    = useState(false)
   const [iaReco,      setIaReco]      = useState(null)   // { reco, produit }
   const [modal,       setModal]       = useState(false)
+  const [editPromo,   setEditPromo]   = useState(null)   // promotion en cours d'édition
   const [toast,       setToast]       = useState(null)
   const [showPerimes, setShowPerimes] = useState(true)
 
@@ -283,6 +355,7 @@ export default function Promotions() {
     setApplying(true)
     try {
       const saved = await appliquerIAPromotion({
+        produit_id:            reco.produit_id,
         recommandation_ia_id:  reco.recommandation_id,
         pourcentage_reduction: reco.pourcentage_suggere,
       })
@@ -301,6 +374,22 @@ export default function Promotions() {
       await deletePromotion(id)
       setPromotions(prev => prev.filter(p => p.id !== id))
       showToast('Promotion désactivée.')
+    } catch (err) {
+      showToast(err.message, false)
+    }
+  }
+
+  function handleEditSaved(saved) {
+    setEditPromo(null)
+    setPromotions(prev => prev.map(p => p.id === saved.id ? saved : p))
+    showToast('Promotion mise à jour.')
+  }
+
+  async function handleActivate(id) {
+    try {
+      const updated = await updatePromotion(id, { est_active: true })
+      setPromotions(prev => prev.map(p => p.id === id ? updated : p))
+      showToast('Promotion réactivée.')
     } catch (err) {
       showToast(err.message, false)
     }
@@ -442,7 +531,11 @@ export default function Promotions() {
                               : <span className="badge badge-gray">Manuel</span>}
                           </td>
                           {isAdminOrGest && (
-                            <td>
+                            <td style={{ display: 'flex', gap: 4 }}>
+                              <button className="act-btn" title="Modifier"
+                                onClick={() => setEditPromo(p)}>
+                                <Pencil size={13} />
+                              </button>
                               <button className="act-btn del" title="Désactiver"
                                 onClick={() => handleDelete(p.id)}>
                                 <Trash2 size={13} />
@@ -471,11 +564,12 @@ export default function Promotions() {
                       <tr>
                         <th>PRODUIT</th><th>RÉDUCTION</th>
                         <th>PRIX PROMO</th><th>DATE FIN</th><th>SOURCE</th>
+                        {isAdminOrGest && <th>ACTIONS</th>}
                       </tr>
                     </thead>
                     <tbody>
                       {inactives.slice(0, 10).map(p => (
-                        <tr key={p.id} style={{ opacity: 0.6 }}>
+                        <tr key={p.id} style={{ opacity: 0.7 }}>
                           <td className="td-name">{p.produit_nom || `#${p.produit_id}`}</td>
                           <td><span className="pct-badge pct-badge--inactive">-{p.pourcentage_reduction}%</span></td>
                           <td>{fmtTND(p.prix_promo)}</td>
@@ -485,6 +579,14 @@ export default function Promotions() {
                               ? <span className="badge badge-teal"><Brain size={10} /> IA</span>
                               : <span className="badge badge-gray">Manuel</span>}
                           </td>
+                          {isAdminOrGest && (
+                            <td>
+                              <button className="act-btn" title="Réactiver cette promotion"
+                                onClick={() => handleActivate(p.id)}>
+                                <Check size={13} />
+                              </button>
+                            </td>
+                          )}
                         </tr>
                       ))}
                     </tbody>
@@ -501,6 +603,15 @@ export default function Promotions() {
             produits={produits}
             onClose={() => setModal(false)}
             onSaved={handleModalSaved}
+          />
+        )}
+
+        {/* Modal édition promotion */}
+        {editPromo && (
+          <EditPromotionModal
+            promo={editPromo}
+            onClose={() => setEditPromo(null)}
+            onSaved={handleEditSaved}
           />
         )}
 

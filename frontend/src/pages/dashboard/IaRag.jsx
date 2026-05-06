@@ -203,9 +203,9 @@ export default function IaRag() {
                 en langage naturel grâce au pipeline RAG + Groq</p>
               <div className="chat-empty-cards">
                 {[
-                  { icon: '📊', text: 'Analyse des ruptures' },
-                  { icon: '📈', text: 'Tendances de stock' },
-                  { icon: '⚠️', text: 'Anomalies détectées' },
+                  { icon: '', text: 'Analyse des ruptures' },
+                  { icon: '', text: 'Tendances de stock' },
+                  { icon: '', text: 'Anomalies détectées' },
                 ].map(c => (
                   <button key={c.text} className="empty-card"
                     onClick={() => send(c.text)}>

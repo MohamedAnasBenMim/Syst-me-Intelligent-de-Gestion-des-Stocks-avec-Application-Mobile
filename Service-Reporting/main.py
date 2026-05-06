@@ -10,14 +10,20 @@ from app.routes import router
 Base.metadata.create_all(bind=engine)
 
 # Migration : ajouter les colonnes manquantes si elles n'existent pas encore
+_MIGRATIONS = [
+    "ALTER TABLE calculs_profit_perte ADD COLUMN IF NOT EXISTS chiffre_affaires FLOAT DEFAULT 0.0",
+    "ALTER TABLE calculs_profit_perte ADD COLUMN IF NOT EXISTS marge_brute      FLOAT DEFAULT 0.0",
+    "ALTER TABLE calculs_profit_perte ADD COLUMN IF NOT EXISTS taux_marge       FLOAT DEFAULT 0.0",
+    "ALTER TABLE calculs_profit_perte ADD COLUMN IF NOT EXISTS cout_achats      FLOAT DEFAULT 0.0",
+]
+
 with engine.connect() as conn:
-    try:
-        conn.execute(__import__('sqlalchemy').text(
-            "ALTER TABLE calculs_profit_perte ADD COLUMN IF NOT EXISTS chiffre_affaires FLOAT DEFAULT 0.0"
-        ))
-        conn.commit()
-    except Exception:
-        conn.rollback()
+    for sql in _MIGRATIONS:
+        try:
+            conn.execute(__import__('sqlalchemy').text(sql))
+            conn.commit()
+        except Exception:
+            conn.rollback()
 
 app = FastAPI(
     title       = f"{settings.SERVICE_NAME} — SGS SaaS",
@@ -28,12 +34,16 @@ app = FastAPI(
     redoc_url   = "/redoc"  if settings.ENVIRONMENT != "production" else None,
 )
 
+_DEV_ORIGINS = [
+    "http://localhost:5173", "http://127.0.0.1:5173",
+    "http://localhost:3000",  "http://127.0.0.1:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins     = ["*"] if settings.DEBUG else ["https://sgs-saas.tn"],
-    allow_credentials = True,
-    allow_methods     = ["*"],
-    allow_headers     = ["*"],
+    allow_origins  = _DEV_ORIGINS if settings.DEBUG else ["https://sgs-saas.tn"],
+    allow_methods  = ["*"],
+    allow_headers  = ["*"],
 )
 
 app.include_router(router, prefix="/api/v1")

@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import DashboardLayout from '../../components/DashboardLayout'
 import { useAuth } from '../../context/AuthContext'
-import { getStocks, getEntrepotsTree } from '../../services/api'
+import { getStocks, getDepots, getMagasins } from '../../services/api'
 import './common.css'
 
 // ── Config ──────────────────────────────────────────────────
@@ -83,10 +83,10 @@ function NodeCard({ node, allStocks, onClick }) {
   const hasChildren = (node.enfants || []).length > 0
 
   const worstLabel = {
-    rupture:  '⚠ Rupture de stock',
-    critique: '⚠ Stock critique',
+    rupture:  'Rupture de stock',
+    critique: 'Stock critique',
     surstock: '↑ Surstock',
-    normal:   '✓ Tout normal',
+    normal:   'Tout normal',
   }
 
   return (
@@ -267,12 +267,25 @@ export default function Stocks() {
     setLoading(true)
     setError(null)
     try {
-      const [s, t] = await Promise.all([
+      const [s, depotsRes, magasinsRes] = await Promise.all([
         getStocks(),
-        getEntrepotsTree().catch(() => []),
+        getDepots({ actif_seulement: false }).catch(() => ({ depots: [] })),
+        getMagasins({ actif_seulement: false }).catch(() => ({ magasins: [] })),
       ])
-      const stocksArr = Array.isArray(s) ? s : []
-      const treeArr   = Array.isArray(t) ? t : []
+      const depots    = depotsRes?.depots    || []
+      const magasins  = magasinsRes?.magasins || []
+      const treeArr   = depots.map(d => ({
+        ...d,
+        type_entrepot: 'DEPOT',
+        enfants: magasins
+          .filter(m => m.depot_id === d.id)
+          .map(m => ({ ...m, type_entrepot: 'MAGASIN', enfants: [] })),
+      }))
+      // Normalise les stocks : utilise depot_id ou magasin_id comme entrepot_id
+      const stocksArr = (Array.isArray(s) ? s : []).map(st => ({
+        ...st,
+        entrepot_id: st.depot_id || st.magasin_id || st.entrepot_id,
+      }))
       setStocks(stocksArr)
       setTree(treeArr)
       setFlatEntrepots(flattenTree(treeArr))
@@ -387,8 +400,8 @@ export default function Stocks() {
         {/* ── Toggle vue ── */}
         <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
           {[
-            { key: 'hierarchy', label: '🏗 Vue hiérarchique' },
-            { key: 'list',      label: '📋 Liste complète',  icon: List },
+            { key: 'hierarchy', label: 'Vue hiérarchique' },
+            { key: 'list',      label: 'Liste complète',  icon: List },
           ].map(({ key, label }) => (
             <button
               key={key}

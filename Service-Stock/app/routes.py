@@ -1,7 +1,7 @@
 # app/routes.py — service_stock/
 # Tous les endpoints CRUD du Stock Service
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -17,6 +17,7 @@ from app.dependencies import (
     all_roles,
 )
 from app import models, schemas
+from app.schemas import _verifier_marge
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -30,20 +31,20 @@ async def _notifier_alerte(
     token:       str,
 ):
     """Appelle le Service Alertes après chaque modification de stock."""
-    # Les enums du service-alertes sont en MAJUSCULES
     niveau_upper = niveau.upper()
+    location_id  = stock.depot_id or stock.magasin_id or stock.entrepot_id
     if niveau_upper == "NORMAL":
         payload = {
-            "produit_id":       produit.id,
-            "entrepot_id":      stock.entrepot_id,
-            "niveau":           "NORMAL",
+            "produit_id":        produit.id,
+            "entrepot_id":       location_id,
+            "niveau":            "NORMAL",
             "quantite_actuelle": stock.quantite,
         }
     else:
         payload = {
             "produit_id":        produit.id,
             "produit_nom":       produit.designation,
-            "entrepot_id":       stock.entrepot_id,
+            "entrepot_id":       location_id,
             "niveau":            niveau_upper,
             "quantite_actuelle": stock.quantite,
             "seuil_alerte_min":  produit.seuil_alerte_min,
@@ -68,12 +69,7 @@ router = APIRouter()
 # ══════════════════════════════════════════════════════════
 
 def _generer_reference(db: Session) -> str:
-    """
-    Génère une référence unique pour un produit.
-    Format : PRD-YYYYMMDD-XXXX (XXXX = compteur auto-incrémenté)
-    """
     prefix = f"PRD-{datetime.now().strftime('%Y%m%d')}-"
-    # Trouver le dernier numéro utilisé pour ce préfixe
     derniere = (
         db.query(models.Produit.reference)
         .filter(models.Produit.reference.like(f"{prefix}%"))
@@ -90,6 +86,229 @@ def _generer_reference(db: Session) -> str:
     return f"{prefix}{num:04d}"
 
 
+def _calculer_niveau_alerte(quantite: float, produit_id: int, db: Session) -> str:
+    if quantite == 0:
+        return "rupture"
+    produit = db.query(models.Produit).filter(models.Produit.id == produit_id).first()
+    if not produit:
+        return "normal"
+    if quantite <= produit.seuil_alerte_min:
+        return "critique"
+    if quantite > produit.seuil_alerte_max:
+        return "surstock"
+    return "normal"
+
+
+def _enrichir_produit(produit: models.Produit) -> schemas.ProduitResponse:
+    """Construit ProduitResponse avec avertissement marge calculé."""
+    r = schemas.ProduitResponse.model_validate(produit)
+    _, warning = _verifier_marge(produit.prix_achat, produit.prix_vente, produit.type_produit)
+    r.avertissement_marge = warning
+    return r
+
+
+# ══════════════════════════════════════════════════════════
+# ENDPOINTS — FOURNISSEURS
+# ══════════════════════════════════════════════════════════
+
+@router.get(
+    "/fournisseurs",
+    response_model=schemas.FournisseurList,
+    tags=["Fournisseurs"],
+    summary="Lister tous les fournisseurs",
+)
+async def list_fournisseurs(
+    actifs_seulement: bool = Query(True),
+    skip:  int             = Query(0,   ge=0),
+    limit: int             = Query(100, ge=1, le=500),
+    db:    Session         = Depends(get_db),
+    _user: dict            = Depends(get_current_user),
+):
+    query = db.query(models.Fournisseur)
+    if actifs_seulement:
+        query = query.filter(models.Fournisseur.est_actif == True)
+    total        = query.count()
+    fournisseurs = query.order_by(models.Fournisseur.nom).offset(skip).limit(limit).all()
+
+    # Enrichir avec le nombre de produits liés
+    result = []
+    for f in fournisseurs:
+        r = schemas.FournisseurResponse.model_validate(f)
+        r.nb_produits = len(f.produit_fournisseurs)
+        result.append(r)
+
+    return schemas.FournisseurList(total=total, fournisseurs=result)
+
+
+@router.post(
+    "/fournisseurs",
+    response_model=schemas.FournisseurResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Fournisseurs"],
+    summary="Créer un fournisseur",
+)
+async def create_fournisseur(
+    data:  schemas.FournisseurCreate,
+    db:    Session = Depends(get_db),
+    _user: dict    = Depends(admin_or_manager),
+):
+    fournisseur = models.Fournisseur(**data.model_dump())
+    db.add(fournisseur)
+    db.commit()
+    db.refresh(fournisseur)
+    r = schemas.FournisseurResponse.model_validate(fournisseur)
+    r.nb_produits = 0
+    return r
+
+
+@router.get(
+    "/fournisseurs/{fournisseur_id}",
+    response_model=schemas.FournisseurResponse,
+    tags=["Fournisseurs"],
+    summary="Détail d'un fournisseur",
+)
+async def get_fournisseur(
+    fournisseur_id: int,
+    db:             Session = Depends(get_db),
+    _user:          dict    = Depends(get_current_user),
+):
+    f = db.query(models.Fournisseur).filter(models.Fournisseur.id == fournisseur_id).first()
+    if not f:
+        raise HTTPException(status_code=404, detail=f"Fournisseur {fournisseur_id} introuvable")
+    r = schemas.FournisseurResponse.model_validate(f)
+    r.nb_produits = len(f.produit_fournisseurs)
+    return r
+
+
+@router.put(
+    "/fournisseurs/{fournisseur_id}",
+    response_model=schemas.FournisseurResponse,
+    tags=["Fournisseurs"],
+    summary="Modifier un fournisseur",
+)
+async def update_fournisseur(
+    fournisseur_id: int,
+    data:           schemas.FournisseurUpdate,
+    db:             Session = Depends(get_db),
+    _user:          dict    = Depends(admin_or_manager),
+):
+    f = db.query(models.Fournisseur).filter(models.Fournisseur.id == fournisseur_id).first()
+    if not f:
+        raise HTTPException(status_code=404, detail=f"Fournisseur {fournisseur_id} introuvable")
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(f, field, value)
+    db.commit()
+    db.refresh(f)
+    r = schemas.FournisseurResponse.model_validate(f)
+    r.nb_produits = len(f.produit_fournisseurs)
+    return r
+
+
+@router.delete(
+    "/fournisseurs/{fournisseur_id}",
+    response_model=schemas.MessageResponse,
+    tags=["Fournisseurs"],
+    summary="Désactiver un fournisseur (soft delete)",
+)
+async def delete_fournisseur(
+    fournisseur_id: int,
+    db:             Session = Depends(get_db),
+    _user:          dict    = Depends(only_admin),
+):
+    f = db.query(models.Fournisseur).filter(models.Fournisseur.id == fournisseur_id).first()
+    if not f:
+        raise HTTPException(status_code=404, detail=f"Fournisseur {fournisseur_id} introuvable")
+    f.est_actif = False
+    db.commit()
+    return schemas.MessageResponse(message=f"Fournisseur '{f.nom}' désactivé")
+
+
+@router.post(
+    "/fournisseurs/{fournisseur_id}/produits",
+    response_model=schemas.MessageResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Fournisseurs"],
+    summary="Lier un produit à ce fournisseur",
+)
+async def lier_produit_fournisseur(
+    fournisseur_id: int,
+    data:           schemas.LierProduitFournisseurRequest,
+    db:             Session = Depends(get_db),
+    _user:          dict    = Depends(admin_or_manager),
+):
+    f = db.query(models.Fournisseur).filter(models.Fournisseur.id == fournisseur_id).first()
+    if not f:
+        raise HTTPException(status_code=404, detail=f"Fournisseur {fournisseur_id} introuvable")
+    p = db.query(models.Produit).filter(models.Produit.id == data.produit_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail=f"Produit {data.produit_id} introuvable")
+
+    existant = db.query(models.ProduitFournisseur).filter(
+        models.ProduitFournisseur.produit_id     == data.produit_id,
+        models.ProduitFournisseur.fournisseur_id == fournisseur_id,
+    ).first()
+    if existant:
+        raise HTTPException(status_code=400, detail="Lien produit-fournisseur déjà existant")
+
+    lien = models.ProduitFournisseur(
+        produit_id     = data.produit_id,
+        fournisseur_id = fournisseur_id,
+        prix_achat     = data.prix_achat,
+        est_prefere    = data.est_prefere,
+    )
+    db.add(lien)
+    db.commit()
+    return schemas.MessageResponse(message=f"Produit {p.designation} lié au fournisseur {f.nom}")
+
+
+@router.delete(
+    "/fournisseurs/{fournisseur_id}/produits/{produit_id}",
+    response_model=schemas.MessageResponse,
+    tags=["Fournisseurs"],
+    summary="Délier un produit de ce fournisseur",
+)
+async def delier_produit_fournisseur(
+    fournisseur_id: int,
+    produit_id:     int,
+    db:             Session = Depends(get_db),
+    _user:          dict    = Depends(admin_or_manager),
+):
+    lien = db.query(models.ProduitFournisseur).filter(
+        models.ProduitFournisseur.produit_id     == produit_id,
+        models.ProduitFournisseur.fournisseur_id == fournisseur_id,
+    ).first()
+    if not lien:
+        raise HTTPException(status_code=404, detail="Lien produit-fournisseur introuvable")
+    db.delete(lien)
+    db.commit()
+    return schemas.MessageResponse(message="Lien supprimé")
+
+
+@router.get(
+    "/fournisseurs/{fournisseur_id}/produits",
+    tags=["Fournisseurs"],
+    summary="Produits liés à ce fournisseur",
+)
+async def get_produits_fournisseur(
+    fournisseur_id: int,
+    db:             Session = Depends(get_db),
+    _user:          dict    = Depends(get_current_user),
+):
+    f = db.query(models.Fournisseur).filter(models.Fournisseur.id == fournisseur_id).first()
+    if not f:
+        raise HTTPException(status_code=404, detail=f"Fournisseur {fournisseur_id} introuvable")
+    return [
+        {
+            "produit_id":   lien.produit_id,
+            "designation":  lien.produit.designation if lien.produit else None,
+            "reference":    lien.produit.reference   if lien.produit else None,
+            "prix_achat":   lien.prix_achat,
+            "est_prefere":  lien.est_prefere,
+        }
+        for lien in f.produit_fournisseurs
+    ]
+
+
 # ══════════════════════════════════════════════════════════
 # ENDPOINTS — PRODUITS
 # ══════════════════════════════════════════════════════════
@@ -101,18 +320,23 @@ def _generer_reference(db: Session) -> str:
     summary="Lister tous les produits actifs",
 )
 async def list_produits(
-    categorie: Optional[str] = Query(None),
-    skip:      int           = Query(0,   ge=0),
-    limit:     int           = Query(100, ge=1, le=500),
-    db:        Session       = Depends(get_db),
-    _user:     dict          = Depends(get_current_user),
+    categorie:    Optional[str]            = Query(None),
+    type_produit: Optional[schemas.TypeProduit]   = Query(None),
+    pattern_vente:Optional[schemas.PatternVente]  = Query(None),
+    skip:  int    = Query(0,   ge=0),
+    limit: int    = Query(100, ge=1, le=500),
+    db:    Session = Depends(get_db),
+    _user: dict    = Depends(get_current_user),
 ):
-    query = db.query(models.Produit).filter(
-        models.Produit.est_actif == True
-    )
+    query = db.query(models.Produit).filter(models.Produit.est_actif == True)
     if categorie:
         query = query.filter(models.Produit.categorie == categorie)
-    return query.offset(skip).limit(limit).all()
+    if type_produit:
+        query = query.filter(models.Produit.type_produit == type_produit.value)
+    if pattern_vente:
+        query = query.filter(models.Produit.pattern_vente == pattern_vente.value)
+    produits = query.offset(skip).limit(limit).all()
+    return [_enrichir_produit(p) for p in produits]
 
 
 @router.post(
@@ -128,7 +352,6 @@ async def create_produit(
     _user:       dict                         = Depends(admin_or_manager),
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
-    # ── Auto-générer la référence si non fournie ───────────
     reference = data.reference
     if not reference:
         reference = _generer_reference(db)
@@ -145,38 +368,45 @@ async def create_produit(
 
     payload = data.model_dump()
     payload["reference"] = reference
+
+    # Calculer la marge si les deux prix sont fournis
+    marge, _ = _verifier_marge(
+        payload.get("prix_achat"),
+        payload.get("prix_vente"),
+        payload.get("type_produit", "CONSOMMABLE"),
+    )
+    payload["marge_calculee"] = marge
+
     produit = models.Produit(**payload)
     db.add(produit)
     db.commit()
     db.refresh(produit)
 
-    # ── Déclencher alerte expiration si la date est dans les 30 prochains jours ──
+    # Alerte expiration si dans les 30 jours
     if produit.date_expiration:
         jours = (produit.date_expiration - date.today()).days
         if 0 <= jours <= 30:
-            message = (
-                f"📅 EXPIRATION PROCHE — {produit.designation} — "
-                f"Date d'expiration : {produit.date_expiration} (dans {jours} jour(s)) — "
-                f"Recommandation : surveiller le stock et envisager une promotion."
-            )
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
                     await client.post(
                         f"{settings.ALERT_SERVICE_URL}/api/v1/alertes/declencher",
                         json={
-                            "produit_id":   produit.id,
-                            "produit_nom":  produit.designation,
-                            "entrepot_id":  0,  # produit sans stock encore — entrepôt inconnu
-                            "niveau":       "EXPIRATION_PROCHE",
+                            "produit_id":        produit.id,
+                            "produit_nom":       produit.designation,
+                            "entrepot_id":       0,
+                            "niveau":            "EXPIRATION_PROCHE",
                             "quantite_actuelle": 0,
-                            "message":      message,
+                            "message": (
+                                f"EXPIRATION PROCHE — {produit.designation} — "
+                                f"dans {jours} jour(s)"
+                            ),
                         },
                         headers={"Authorization": f"Bearer {credentials.credentials}"},
                     )
             except Exception as e:
                 logger.warning(f"Alerte expiration non envoyée : {e}")
 
-    return produit
+    return _enrichir_produit(produit)
 
 
 @router.get(
@@ -195,11 +425,8 @@ async def get_produit(
         models.Produit.est_actif == True,
     ).first()
     if not produit:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Produit {produit_id} introuvable",
-        )
-    return produit
+        raise HTTPException(status_code=404, detail=f"Produit {produit_id} introuvable")
+    return _enrichir_produit(produit)
 
 
 @router.put(
@@ -214,48 +441,43 @@ async def update_produit(
     db:         Session = Depends(get_db),
     _user:      dict    = Depends(admin_or_manager),
 ):
-    produit = db.query(models.Produit).filter(
-        models.Produit.id == produit_id
-    ).first()
+    produit = db.query(models.Produit).filter(models.Produit.id == produit_id).first()
     if not produit:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Produit {produit_id} introuvable",
-        )
-    for field, value in data.model_dump(exclude_unset=True).items():
+        raise HTTPException(status_code=404, detail=f"Produit {produit_id} introuvable")
+
+    updates = data.model_dump(exclude_unset=True)
+    for field, value in updates.items():
         setattr(produit, field, value)
+
+    # Recalculer la marge si prix modifiés
+    marge, _ = _verifier_marge(produit.prix_achat, produit.prix_vente, produit.type_produit)
+    produit.marge_calculee = marge
+
     db.commit()
     db.refresh(produit)
-    return produit
+    return _enrichir_produit(produit)
 
 
 @router.patch(
     "/produits/{produit_id}/ajouter-reference",
     response_model=schemas.ProduitResponse,
     tags=["Produits"],
-    summary="Assigner automatiquement une référence à un produit qui n'en a pas",
-    description="Appelé par Service Mouvement lors d'une ENTREE si le produit n'a pas de référence."
+    summary="Assigner automatiquement une référence",
 )
 async def ajouter_reference_produit(
     produit_id: int,
     db:         Session = Depends(get_db),
     _user:      dict    = Depends(all_roles),
 ):
-    produit = db.query(models.Produit).filter(
-        models.Produit.id == produit_id
-    ).first()
+    produit = db.query(models.Produit).filter(models.Produit.id == produit_id).first()
     if not produit:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Produit {produit_id} introuvable",
-        )
+        raise HTTPException(status_code=404, detail=f"Produit {produit_id} introuvable")
     if produit.reference:
-        # Déjà une référence → rien à faire
-        return produit
+        return _enrichir_produit(produit)
     produit.reference = _generer_reference(db)
     db.commit()
     db.refresh(produit)
-    return produit
+    return _enrichir_produit(produit)
 
 
 @router.delete(
@@ -269,23 +491,15 @@ async def delete_produit(
     db:         Session = Depends(get_db),
     _user:      dict    = Depends(only_admin),
 ):
-    produit = db.query(models.Produit).filter(
-        models.Produit.id == produit_id
-    ).first()
+    produit = db.query(models.Produit).filter(models.Produit.id == produit_id).first()
     if not produit:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Produit {produit_id} introuvable",
-        )
+        raise HTTPException(status_code=404, detail=f"Produit {produit_id} introuvable")
     stock_existant = db.query(models.Stock).filter(
         models.Stock.produit_id == produit_id,
         models.Stock.quantite   >  0,
     ).first()
     if stock_existant:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Impossible de supprimer : stock > 0",
-        )
+        raise HTTPException(status_code=400, detail="Impossible de supprimer : stock > 0")
     produit.est_actif = False
     db.commit()
 
@@ -301,13 +515,19 @@ async def delete_produit(
     summary="Lister tous les niveaux de stock",
 )
 async def list_stocks(
-    entrepot_id: Optional[int] = Query(None),
+    depot_id:    Optional[int] = Query(None),
+    magasin_id:  Optional[int] = Query(None),
+    entrepot_id: Optional[int] = Query(None, description="Alias legacy pour depot_id/magasin_id"),
     produit_id:  Optional[int] = Query(None),
     db:          Session       = Depends(get_db),
     _user:       dict          = Depends(get_current_user),
 ):
     query = db.query(models.Stock)
-    if entrepot_id:
+    if depot_id:
+        query = query.filter(models.Stock.depot_id == depot_id)
+    elif magasin_id:
+        query = query.filter(models.Stock.magasin_id == magasin_id)
+    elif entrepot_id:
         query = query.filter(models.Stock.entrepot_id == entrepot_id)
     if produit_id:
         query = query.filter(models.Stock.produit_id == produit_id)
@@ -327,42 +547,49 @@ async def get_stocks_en_alerte(
     stocks = db.query(models.Stock).filter(
         models.Stock.niveau_alerte.in_(["critique", "rupture", "surstock"])
     ).all()
-    return schemas.StockAlertResponse(
-        total_alertes=len(stocks),
-        stocks=stocks,
-    )
+    return schemas.StockAlertResponse(total_alertes=len(stocks), stocks=stocks)
 
 
 @router.get(
-    "/stocks/entrepot/{entrepot_id}",
+    "/stocks/depot/{depot_id}",
     response_model=List[schemas.StockResponse],
     tags=["Stocks"],
-    summary="Stocks d'un entrepôt",
+    summary="Stocks d'un dépôt",
 )
-async def get_stocks_par_entrepot(
-    entrepot_id: int,
-    db:          Session = Depends(get_db),
-    _user:       dict    = Depends(get_current_user),
+async def get_stocks_par_depot(
+    depot_id: int,
+    db:       Session = Depends(get_db),
+    _user:    dict    = Depends(get_current_user),
 ):
-    return db.query(models.Stock).filter(
-        models.Stock.entrepot_id == entrepot_id
-    ).all()
+    return db.query(models.Stock).filter(models.Stock.depot_id == depot_id).all()
+
+
+@router.get(
+    "/stocks/magasin/{magasin_id}",
+    response_model=List[schemas.StockResponse],
+    tags=["Stocks"],
+    summary="Stocks d'un magasin",
+)
+async def get_stocks_par_magasin(
+    magasin_id: int,
+    db:         Session = Depends(get_db),
+    _user:      dict    = Depends(get_current_user),
+):
+    return db.query(models.Stock).filter(models.Stock.magasin_id == magasin_id).all()
 
 
 @router.get(
     "/stocks/produit/{produit_id}",
     response_model=List[schemas.StockResponse],
     tags=["Stocks"],
-    summary="Stock d'un produit dans tous les entrepôts",
+    summary="Stock d'un produit dans tous les dépôts/magasins",
 )
 async def get_stocks_par_produit(
     produit_id: int,
     db:         Session = Depends(get_db),
     _user:      dict    = Depends(get_current_user),
 ):
-    return db.query(models.Stock).filter(
-        models.Stock.produit_id == produit_id
-    ).all()
+    return db.query(models.Stock).filter(models.Stock.produit_id == produit_id).all()
 
 
 # ══════════════════════════════════════════════════════════
@@ -375,7 +602,6 @@ async def get_stocks_par_produit(
     response_model=schemas.StockOperationResponse,
     tags=["Stocks"],
     summary="Augmenter le stock — appelé par Service Mouvement",
-    description="Appelé lors d'une ENTREE ou TRANSFERT (entrepôt destination)."
 )
 async def augmenter_stock(
     data:        schemas.StockAugmenter,
@@ -383,44 +609,77 @@ async def augmenter_stock(
     _user:       dict                         = Depends(all_roles),
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
-    # Vérifier que le produit existe
     produit = db.query(models.Produit).filter(
         models.Produit.id        == data.produit_id,
         models.Produit.est_actif == True,
     ).first()
     if not produit:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Produit {data.produit_id} introuvable"
-        )
+        raise HTTPException(status_code=404, detail=f"Produit {data.produit_id} introuvable")
 
-    # Chercher le stock existant ou en créer un nouveau
-    stock = db.query(models.Stock).filter(
-        models.Stock.produit_id  == data.produit_id,
-        models.Stock.entrepot_id == data.entrepot_id,
-    ).first()
+    # entrepot_id est dénormalisé : = depot_id (DEPOT) ou magasin_id (MAGASIN)
+    entrepot_id_val = data.entrepot_id or data.depot_id or data.magasin_id
 
-    if not stock:
-        # Premier stock de ce produit dans cet entrepôt
+    if data.numero_lot:
+        # Entrée par lot : toujours créer un nouvel enregistrement
         stock = models.Stock(
-            produit_id=data.produit_id,
-            entrepot_id=data.entrepot_id,
-            quantite=0.0,
+            produit_id      = data.produit_id,
+            entrepot_id     = entrepot_id_val,
+            quantite        = data.quantite,
+            numero_lot      = data.numero_lot,
+            fournisseur_id  = data.fournisseur_id,
+            fournisseur_nom = data.fournisseur_nom,
+            prix_achat_lot  = data.prix_achat_lot,
+            prix_vente_lot  = data.prix_vente_lot,
+            date_reception  = data.date_reception or date.today(),
+            emplacement     = data.emplacement,
+            depot_id        = data.depot_id,
+            magasin_id      = data.magasin_id,
+            location_type   = data.location_type,
         )
         db.add(stock)
-        db.flush()
+        quantite_avant = 0.0
+    else:
+        # Upsert sur (produit_id, depot_id ou magasin_id) selon location_type
+        if data.location_type == "DEPOT" and data.depot_id:
+            stock = db.query(models.Stock).filter(
+                models.Stock.produit_id == data.produit_id,
+                models.Stock.depot_id   == data.depot_id,
+                models.Stock.numero_lot == None,
+            ).first()
+        elif data.location_type == "MAGASIN" and data.magasin_id:
+            stock = db.query(models.Stock).filter(
+                models.Stock.produit_id  == data.produit_id,
+                models.Stock.magasin_id  == data.magasin_id,
+                models.Stock.numero_lot  == None,
+            ).first()
+        else:
+            stock = db.query(models.Stock).filter(
+                models.Stock.produit_id  == data.produit_id,
+                models.Stock.entrepot_id == entrepot_id_val,
+                models.Stock.numero_lot  == None,
+            ).first()
 
-    # Sauvegarder la quantité avant modification
-    quantite_avant  = stock.quantite
+        if not stock:
+            stock = models.Stock(
+                produit_id    = data.produit_id,
+                entrepot_id   = entrepot_id_val,
+                quantite      = 0.0,
+                depot_id      = data.depot_id,
+                magasin_id    = data.magasin_id,
+                location_type = data.location_type,
+            )
+            db.add(stock)
+            db.flush()
+        else:
+            stock.entrepot_id = entrepot_id_val
+            if data.depot_id:      stock.depot_id    = data.depot_id
+            if data.magasin_id:    stock.magasin_id  = data.magasin_id
+            if data.location_type: stock.location_type = data.location_type
 
-    # Augmenter le stock
-    stock.quantite += data.quantite
+        quantite_avant  = stock.quantite
+        stock.quantite += data.quantite
 
-    # Recalculer le niveau d'alerte
-    stock.niveau_alerte = _calculer_niveau_alerte(
-        stock.quantite, data.produit_id, db
-    )
-
+    stock.niveau_alerte = _calculer_niveau_alerte(stock.quantite, data.produit_id, db)
     db.commit()
     db.refresh(stock)
 
@@ -428,11 +687,11 @@ async def augmenter_stock(
 
     return schemas.StockOperationResponse(
         produit_id     = data.produit_id,
-        entrepot_id    = data.entrepot_id,
+        entrepot_id    = stock.entrepot_id,
         quantite_avant = quantite_avant,
         quantite_apres = stock.quantite,
         niveau_alerte  = stock.niveau_alerte,
-        message        = f"Stock augmenté de {data.quantite} unités avec succès"
+        message        = f"Stock augmenté de {data.quantite} unités avec succès",
     )
 
 
@@ -441,7 +700,6 @@ async def augmenter_stock(
     response_model=schemas.StockOperationResponse,
     tags=["Stocks"],
     summary="Diminuer le stock — appelé par Service Mouvement",
-    description="Appelé lors d'une SORTIE ou TRANSFERT (entrepôt source). Vérifie que stock >= quantite."
 )
 async def diminuer_stock(
     data:        schemas.StockDiminuer,
@@ -449,58 +707,60 @@ async def diminuer_stock(
     _user:       dict                         = Depends(all_roles),
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
-    # Vérifier que le produit existe
     produit = db.query(models.Produit).filter(
         models.Produit.id        == data.produit_id,
         models.Produit.est_actif == True,
     ).first()
     if not produit:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Produit {data.produit_id} introuvable"
-        )
+        raise HTTPException(status_code=404, detail=f"Produit {data.produit_id} introuvable")
 
-    # Vérifier que le stock existe
-    stock = db.query(models.Stock).filter(
-        models.Stock.produit_id  == data.produit_id,
-        models.Stock.entrepot_id == data.entrepot_id,
-    ).first()
+    # Chercher par depot_id ou magasin_id si location_type précisé, sinon par entrepot_id (legacy)
+    entrepot_id_val = data.entrepot_id or data.depot_id or data.magasin_id
+    if data.location_type == "DEPOT" and data.depot_id:
+        stock = db.query(models.Stock).filter(
+            models.Stock.produit_id == data.produit_id,
+            models.Stock.depot_id   == data.depot_id,
+            models.Stock.numero_lot == None,
+        ).first()
+    elif data.location_type == "MAGASIN" and data.magasin_id:
+        stock = db.query(models.Stock).filter(
+            models.Stock.produit_id  == data.produit_id,
+            models.Stock.magasin_id  == data.magasin_id,
+            models.Stock.numero_lot  == None,
+        ).first()
+    else:
+        stock = db.query(models.Stock).filter(
+            models.Stock.produit_id  == data.produit_id,
+            models.Stock.entrepot_id == entrepot_id_val,
+            models.Stock.numero_lot  == None,
+        ).first()
 
     if not stock:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=400,
             detail={
-                "error"      : "Stock inexistant",
-                "produit_id" : data.produit_id,
-                "entrepot_id": data.entrepot_id,
-                "disponible" : 0,
-                "demande"    : data.quantite,
+                "error":       "Stock inexistant",
+                "produit_id":  data.produit_id,
+                "entrepot_id": entrepot_id_val,
+                "disponible":  0,
+                "demande":     data.quantite,
             }
         )
 
-    # Vérifier que le stock est suffisant
     if stock.quantite < data.quantite:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=400,
             detail={
-                "error"      : "Stock insuffisant",
-                "disponible" : stock.quantite,
-                "demande"    : data.quantite,
-                "manque"     : data.quantite - stock.quantite,
+                "error":      "Stock insuffisant",
+                "disponible": stock.quantite,
+                "demande":    data.quantite,
+                "manque":     data.quantite - stock.quantite,
             }
         )
 
-    # Sauvegarder la quantité avant modification
     quantite_avant  = stock.quantite
-
-    # Diminuer le stock
     stock.quantite -= data.quantite
-
-    # Recalculer le niveau d'alerte
-    stock.niveau_alerte = _calculer_niveau_alerte(
-        stock.quantite, data.produit_id, db
-    )
-
+    stock.niveau_alerte = _calculer_niveau_alerte(stock.quantite, data.produit_id, db)
     db.commit()
     db.refresh(stock)
 
@@ -508,42 +768,12 @@ async def diminuer_stock(
 
     return schemas.StockOperationResponse(
         produit_id     = data.produit_id,
-        entrepot_id    = data.entrepot_id,
+        entrepot_id    = stock.entrepot_id,
         quantite_avant = quantite_avant,
         quantite_apres = stock.quantite,
         niveau_alerte  = stock.niveau_alerte,
-        message        = f"Stock diminué de {data.quantite} unités avec succès"
+        message        = f"Stock diminué de {data.quantite} unités avec succès",
     )
-
-
-# ══════════════════════════════════════════════════════════
-# FONCTION UTILITAIRE PRIVÉE
-# ══════════════════════════════════════════════════════════
-
-def _calculer_niveau_alerte(
-    quantite:   float,
-    produit_id: int,
-    db:         Session,
-) -> str:
-    """
-    Calcule le niveau d'alerte selon la quantité et les seuils du produit.
-    rupture  → quantite == 0
-    critique → quantite < seuil_alerte_min
-    surstock → quantite > seuil_alerte_max
-    normal   → entre seuil_min et seuil_max
-    """
-    if quantite == 0:
-        return "rupture"
-    produit = db.query(models.Produit).filter(
-        models.Produit.id == produit_id
-    ).first()
-    if not produit:
-        return "normal"
-    if quantite < produit.seuil_alerte_min:    # < : stock strictement sous le seuil = critique
-        return "critique"
-    if quantite > produit.seuil_alerte_max:
-        return "surstock"
-    return "normal"
 
 
 # ══════════════════════════════════════════════════════════
@@ -551,21 +781,18 @@ def _calculer_niveau_alerte(
 # ══════════════════════════════════════════════════════════
 
 def _appliquer_promotion_sur_produit(produit: models.Produit, promo: models.Promotion, db: Session):
-    """Met à jour le produit avec le prix promotionnel."""
     produit.en_promotion = True
     produit.prix_promo   = promo.prix_promo
     db.commit()
 
 
 def _retirer_promotion_sur_produit(produit: models.Produit, db: Session):
-    """Retire la promotion du produit — remet prix normal."""
     produit.en_promotion = False
     produit.prix_promo   = None
     db.commit()
 
 
 def _enrichir_promotion(promo: models.Promotion) -> schemas.PromotionResponse:
-    """Construit la réponse avec les infos dénormalisées du produit."""
     r = schemas.PromotionResponse.model_validate(promo)
     if promo.produit:
         r.produit_nom       = promo.produit.designation
@@ -579,11 +806,6 @@ def _enrichir_promotion(promo: models.Promotion) -> schemas.PromotionResponse:
     status_code=status.HTTP_201_CREATED,
     tags=["Promotions"],
     summary="Créer une promotion sur un produit",
-    description="""
-    Crée une promotion manuelle (admin/gestionnaire) ou issue d'une recommandation IA.
-    Calcule automatiquement : **prix_promo = prix_unitaire × (1 - pourcentage / 100)**.
-    Met à jour le produit avec le prix promotionnel.
-    """
 )
 async def create_promotion(
     data:  schemas.PromotionCreate,
@@ -597,12 +819,9 @@ async def create_promotion(
     if not produit:
         raise HTTPException(status_code=404, detail=f"Produit {data.produit_id} introuvable")
     if produit.prix_unitaire <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Le prix unitaire du produit doit être > 0 pour appliquer une promotion"
-        )
+        raise HTTPException(status_code=400,
+                            detail="Le prix unitaire du produit doit être > 0")
 
-    # Désactiver l'ancienne promotion active si elle existe
     ancienne = db.query(models.Promotion).filter(
         models.Promotion.produit_id == data.produit_id,
         models.Promotion.est_active == True,
@@ -610,7 +829,6 @@ async def create_promotion(
     if ancienne:
         ancienne.est_active = False
 
-    # Calculer le prix promotionnel
     prix_initial = produit.prix_unitaire
     prix_promo   = round(prix_initial * (1 - data.pourcentage_reduction / 100), 2)
 
@@ -628,8 +846,7 @@ async def create_promotion(
         est_active            = True,
     )
     db.add(promo)
-    db.flush()  # pour avoir promo.id avant le commit
-
+    db.flush()
     _appliquer_promotion_sur_produit(produit, promo, db)
     db.refresh(promo)
     return _enrichir_promotion(promo)
@@ -642,10 +859,10 @@ async def create_promotion(
     summary="Lister toutes les promotions",
 )
 async def list_promotions(
-    actives_seulement: bool          = Query(False, description="Retourner uniquement les promotions actives"),
+    actives_seulement: bool          = Query(False),
     produit_id:        Optional[int] = Query(None),
-    skip:              int           = Query(0,   ge=0),
-    limit:             int           = Query(50,  ge=1, le=200),
+    skip:              int           = Query(0,  ge=0),
+    limit:             int           = Query(50, ge=1, le=200),
     db:                Session       = Depends(get_db),
     _user:             dict          = Depends(get_current_user),
 ):
@@ -658,10 +875,8 @@ async def list_promotions(
     total      = query.count()
     promotions = query.order_by(models.Promotion.created_at.desc()).offset(skip).limit(limit).all()
     return schemas.PromotionList(
-        total      = total,
-        page       = skip // limit + 1,
-        per_page   = limit,
-        promotions = [_enrichir_promotion(p) for p in promotions],
+        total=total, page=skip // limit + 1, per_page=limit,
+        promotions=[_enrichir_promotion(p) for p in promotions],
     )
 
 
@@ -682,10 +897,8 @@ async def promotions_actives(
         (models.Promotion.date_fin   == None) | (models.Promotion.date_fin >= today),
     ).order_by(models.Promotion.created_at.desc()).all()
     return schemas.PromotionList(
-        total      = len(promotions),
-        page       = 1,
-        per_page   = len(promotions),
-        promotions = [_enrichir_promotion(p) for p in promotions],
+        total=len(promotions), page=1, per_page=len(promotions),
+        promotions=[_enrichir_promotion(p) for p in promotions],
     )
 
 
@@ -710,7 +923,7 @@ async def get_promotion(
     "/promotions/{promotion_id}",
     response_model=schemas.PromotionResponse,
     tags=["Promotions"],
-    summary="Modifier une promotion (pourcentage, date_fin, motif)",
+    summary="Modifier une promotion",
 )
 async def update_promotion(
     promotion_id: int,
@@ -725,7 +938,6 @@ async def update_promotion(
     if data.pourcentage_reduction is not None:
         promo.pourcentage_reduction = data.pourcentage_reduction
         promo.prix_promo = round(promo.prix_initial * (1 - data.pourcentage_reduction / 100), 2)
-        # Mettre à jour le prix sur le produit si la promo est active
         if promo.est_active and promo.produit:
             promo.produit.prix_promo = promo.prix_promo
 
@@ -760,13 +972,12 @@ async def desactiver_promotion(
     promo = db.query(models.Promotion).filter(models.Promotion.id == promotion_id).first()
     if not promo:
         raise HTTPException(status_code=404, detail=f"Promotion {promotion_id} introuvable")
-
     promo.est_active = False
     if promo.produit:
         _retirer_promotion_sur_produit(promo.produit, db)
     db.commit()
     return schemas.MessageResponse(
-        message=f"Promotion {promotion_id} désactivée — produit revenu au prix normal ({promo.prix_initial} DT)"
+        message=f"Promotion {promotion_id} désactivée — prix normal rétabli ({promo.prix_initial} DT)"
     )
 
 
@@ -776,10 +987,6 @@ async def desactiver_promotion(
     status_code=status.HTTP_201_CREATED,
     tags=["Promotions"],
     summary="Appliquer une recommandation IA comme promotion",
-    description="""
-    Applique directement la recommandation de promotion générée par l'IA.
-    Fournir l'ID de la recommandation IA et le pourcentage suggéré.
-    """
 )
 async def appliquer_recommandation_ia(
     produit_id: int,
@@ -794,7 +1001,6 @@ async def appliquer_recommandation_ia(
     if not produit:
         raise HTTPException(status_code=404, detail=f"Produit {produit_id} introuvable")
 
-    # Désactiver l'ancienne promotion active
     ancienne = db.query(models.Promotion).filter(
         models.Promotion.produit_id == produit_id,
         models.Promotion.est_active == True,
@@ -833,19 +1039,12 @@ async def appliquer_recommandation_ia(
     "/stocks/produits-perimes",
     tags=["Stocks"],
     summary="Valeur des produits périmés par catégorie",
-    description="""
-    Identifie tous les produits périmés (date_expiration < aujourd'hui)
-    ayant encore du stock > 0, et calcule leur valeur par catégorie.
-    Utilisé par Service-Reporting pour le calcul P&L automatique.
-    """,
 )
 async def get_produits_perimes(
     db:    Session = Depends(get_db),
     _user: dict    = Depends(get_current_user),
 ):
     aujourd_hui = date.today()
-
-    # Jointure Stock ↔ Produit — produits périmés avec stock restant
     lignes = (
         db.query(models.Stock, models.Produit)
         .join(models.Produit, models.Stock.produit_id == models.Produit.id)
@@ -858,24 +1057,23 @@ async def get_produits_perimes(
         .all()
     )
 
-    # Grouper par catégorie
     categories: dict[str, dict] = {}
     for stock, produit in lignes:
-        cat     = produit.categorie or "Sans catégorie"
-        valeur  = round(produit.prix_unitaire * stock.quantite, 2)
-
+        cat    = produit.categorie or "Sans catégorie"
+        valeur = round(produit.prix_unitaire * stock.quantite, 2)
         if cat not in categories:
             categories[cat] = {"categorie": cat, "produits": [], "total_categorie": 0.0}
-
         categories[cat]["produits"].append({
-            "produit_id"      : produit.id,
-            "reference"       : produit.reference,
-            "designation"     : produit.designation,
-            "date_expiration" : str(produit.date_expiration),
+            "produit_id":       produit.id,
+            "reference":        produit.reference,
+            "designation":      produit.designation,
+            "date_expiration":  str(produit.date_expiration),
             "quantite_restante": stock.quantite,
-            "prix_unitaire"   : produit.prix_unitaire,
-            "valeur_perdue"   : valeur,
-            "entrepot_id"     : stock.entrepot_id,
+            "prix_unitaire":    produit.prix_unitaire,
+            "valeur_perdue":    valeur,
+            "location_type":    stock.location_type,
+            "depot_id":         stock.depot_id,
+            "magasin_id":       stock.magasin_id,
         })
         categories[cat]["total_categorie"] = round(
             categories[cat]["total_categorie"] + valeur, 2
@@ -885,8 +1083,8 @@ async def get_produits_perimes(
     total_global    = round(sum(c["total_categorie"] for c in categories_list), 2)
 
     return {
-        "date_calcul"  : str(aujourd_hui),
-        "nb_produits"  : len(lignes),
-        "total_global" : total_global,
-        "categories"   : categories_list,
+        "date_calcul":  str(aujourd_hui),
+        "nb_produits":  len(lignes),
+        "total_global": total_global,
+        "categories":   categories_list,
     }

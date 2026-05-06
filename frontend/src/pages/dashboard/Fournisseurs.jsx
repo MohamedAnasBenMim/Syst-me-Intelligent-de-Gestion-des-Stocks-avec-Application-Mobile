@@ -5,6 +5,7 @@ import { useAuth } from '../../context/AuthContext'
 import {
   getFournisseurs, createFournisseur, updateFournisseur, deleteFournisseur,
   getFournisseurProduits, performanceFournisseurs,
+  lierProduitFournisseur, delierProduitFournisseur, getProduits,
 } from '../../services/api'
 import './common.css'
 
@@ -177,7 +178,13 @@ function FournisseurModal({ mode, initial, onClose, onSaved }) {
 
 // ── Ligne détail fournisseur (produits liés + IA) ────────────
 function FournisseurDetail({ fournisseur, token }) {
-  const [produits,  setProduits]  = useState(null)
+  const [produits,      setProduits]      = useState(null)
+  const [allProduits,   setAllProduits]   = useState([])
+  const [showLierForm,  setShowLierForm]  = useState(false)
+  const [linkProduitId, setLinkProduitId] = useState('')
+  const [linkPrix,      setLinkPrix]      = useState('')
+  const [linkLoading,   setLinkLoading]   = useState(false)
+  const [linkError,     setLinkError]     = useState(null)
   const [iaLoading, setIaLoading] = useState(false)
   const [iaResult,  setIaResult]  = useState(null)
 
@@ -185,16 +192,65 @@ function FournisseurDetail({ fournisseur, token }) {
     getFournisseurProduits(fournisseur.id)
       .then(data => setProduits(Array.isArray(data) ? data : []))
       .catch(() => setProduits([]))
+    getProduits()
+      .then(data => setAllProduits(Array.isArray(data) ? data : data?.produits || []))
+      .catch(() => setAllProduits([]))
   }, [fournisseur.id])
+
+  async function handleLier(e) {
+    e.preventDefault()
+    if (!linkProduitId) return
+    setLinkLoading(true)
+    setLinkError(null)
+    try {
+      await lierProduitFournisseur(fournisseur.id, {
+        produit_id: Number(linkProduitId),
+        prix_achat: linkPrix !== '' ? Number(linkPrix) : undefined,
+      })
+      const updated = await getFournisseurProduits(fournisseur.id)
+      setProduits(Array.isArray(updated) ? updated : [])
+      setShowLierForm(false)
+      setLinkProduitId('')
+      setLinkPrix('')
+    } catch (err) {
+      setLinkError(err?.message || 'Erreur lors du liage.')
+    } finally {
+      setLinkLoading(false)
+    }
+  }
+
+  async function handleDelier(produitId) {
+    if (!window.confirm('Délier ce produit du fournisseur ?')) return
+    try {
+      await delierProduitFournisseur(fournisseur.id, produitId)
+      setProduits(prev => prev.filter(p => p.produit_id !== produitId))
+    } catch (err) {
+      alert(err?.message || 'Erreur lors du déliage.')
+    }
+  }
 
   async function analyserIA() {
     setIaLoading(true)
+    setIaResult(null)
     try {
       const r = await performanceFournisseurs()
-      const item = r.classement?.find(c => c.nom === fournisseur.nom)
-      setIaResult(item || r)
-    } catch { setIaResult({ error: 'Analyse IA indisponible' }) }
-    finally { setIaLoading(false) }
+      if (!r || typeof r !== 'object') throw new Error('Réponse invalide')
+      const item = r.classement?.find(c =>
+        c.nom?.toLowerCase().trim() === fournisseur.nom?.toLowerCase().trim()
+      )
+      if (item) {
+        setIaResult(item)
+      } else if (r.classement?.length > 0) {
+        // Fournisseur non trouvé dans le classement — afficher la synthèse globale
+        setIaResult({ synthese: r.synthese, recommandation_globale: r.recommandation_globale })
+      } else {
+        setIaResult(r)
+      }
+    } catch (err) {
+      setIaResult({ error: err?.message || 'Analyse IA indisponible' })
+    } finally {
+      setIaLoading(false)
+    }
   }
 
   return (
@@ -202,43 +258,156 @@ function FournisseurDetail({ fournisseur, token }) {
       <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
         {/* Produits liés */}
         <div style={{ flex: 1, minWidth: 200 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: '#374151' }}>
-            <Package size={14} style={{ marginRight: 4 }} />Produits liés ({produits?.length ?? '…'})
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: '#374151', display: 'flex', alignItems: 'center', gap: 4 }}>
+              <Package size={14} />Produits liés ({produits?.length ?? '…'})
+            </div>
+            <button
+              onClick={() => { setShowLierForm(v => !v); setLinkError(null) }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 4,
+                padding: '3px 9px', borderRadius: 6, border: '1px solid #0A4B78',
+                background: showLierForm ? '#0A4B78' : '#fff',
+                color: showLierForm ? '#fff' : '#0A4B78',
+                fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              }}
+            >
+              <Plus size={11} /> Lier un produit
+            </button>
           </div>
+
+          {showLierForm && (
+            <form onSubmit={handleLier} style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: '10px 12px', marginBottom: 10 }}>
+              {linkError && <div style={{ color: '#dc2626', fontSize: 12, marginBottom: 6 }}>{linkError}</div>}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 3 }}>Produit *</div>
+                  <select
+                    value={linkProduitId}
+                    onChange={e => setLinkProduitId(e.target.value)}
+                    required
+                    style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12, minWidth: 160 }}
+                  >
+                    <option value="">Sélectionner…</option>
+                    {allProduits.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.designation}{p.reference ? ` [${p.reference}]` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 3 }}>Prix achat (TND)</div>
+                  <input
+                    type="number" min="0" step="0.01" value={linkPrix}
+                    onChange={e => setLinkPrix(e.target.value)}
+                    placeholder="Optionnel"
+                    style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12, width: 100 }}
+                  />
+                </div>
+                <button type="submit" disabled={linkLoading || !linkProduitId} style={{
+                  padding: '5px 12px', borderRadius: 6, border: 'none',
+                  background: '#0A4B78', color: '#fff', fontSize: 12, fontWeight: 600,
+                  cursor: linkLoading ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 4,
+                }}>
+                  {linkLoading ? <Loader size={11} className="spin" /> : <Plus size={11} />}
+                  Lier
+                </button>
+                <button type="button" onClick={() => setShowLierForm(false)} style={{
+                  padding: '5px 8px', borderRadius: 6, border: '1px solid #e5e7eb',
+                  background: '#fff', fontSize: 12, cursor: 'pointer',
+                }}>
+                  <X size={11} />
+                </button>
+              </div>
+            </form>
+          )}
+
           {produits === null
             ? <Loader size={14} className="spin" />
             : produits.length === 0
             ? <span style={{ color: '#9ca3af', fontSize: 13 }}>Aucun produit lié</span>
             : produits.map(p => (
-              <div key={p.produit_id} style={{ fontSize: 13, color: '#4b5563', padding: '3px 0' }}>
-                • {p.designation} <span style={{ color: '#9ca3af' }}>({p.reference})</span>
-                {p.prix_achat && <span style={{ color: '#0A4B78', marginLeft: 8 }}>{p.prix_achat} TND</span>}
+              <div key={p.produit_id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 13, color: '#4b5563', padding: '4px 0', borderBottom: '1px solid #f3f4f6' }}>
+                <span>
+                  • {p.designation} <span style={{ color: '#9ca3af' }}>({p.reference})</span>
+                  {p.prix_achat && <span style={{ color: '#0A4B78', marginLeft: 8 }}>{p.prix_achat} TND</span>}
+                </span>
+                <button
+                  onClick={() => handleDelier(p.produit_id)}
+                  title="Délier ce produit"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', padding: '0 4px', display: 'flex', alignItems: 'center' }}
+                >
+                  <X size={13} />
+                </button>
               </div>
             ))
           }
         </div>
 
         {/* Analyse IA */}
-        <div style={{ flex: 1, minWidth: 200 }}>
+        <div style={{ flex: 1, minWidth: 220 }}>
           <button onClick={analyserIA} disabled={iaLoading} style={{
             padding: '7px 14px', borderRadius: 8, border: '1px solid #0A4B78',
-            background: '#fff', color: '#0A4B78', cursor: 'pointer', fontWeight: 600, fontSize: 13,
+            background: iaLoading ? '#f0f5ff' : '#fff', color: '#0A4B78',
+            cursor: iaLoading ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: 13,
             display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10,
           }}>
-            {iaLoading ? <Loader size={13} className="spin" /> : '🤖'} Analyser avec l'IA
+            {iaLoading ? <Loader size={13} className="spin" /> : 'IA'}
+            {iaLoading ? 'Analyse en cours…' : 'Analyser avec l\'IA'}
           </button>
+
+          {/* Note : manuelle vs IA */}
+          <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 8, fontStyle: 'italic' }}>
+            Note /5 = saisie manuelle · Score /10 = calculé par l'IA
+          </div>
+
           {iaResult && !iaResult.error && (
-            <div style={{ fontSize: 13, color: '#374151' }}>
-              {iaResult.score && <div><strong>Score:</strong> {iaResult.score}/10</div>}
-              {iaResult.points_forts?.length > 0 && (
-                <div style={{ color: '#16a34a' }}>✓ {iaResult.points_forts.join(', ')}</div>
+            <div style={{ fontSize: 13, color: '#374151', display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {/* Score IA */}
+              {iaResult.score != null && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontWeight: 700 }}>Score IA :</span>
+                  <span style={{
+                    background: iaResult.score >= 7 ? '#f0fdf4' : iaResult.score >= 5 ? '#fefce8' : '#fef2f2',
+                    color:      iaResult.score >= 7 ? '#16a34a' : iaResult.score >= 5 ? '#d97706' : '#dc2626',
+                    fontWeight: 800, fontSize: 15, padding: '1px 10px', borderRadius: 6,
+                  }}>{iaResult.score}/10</span>
+                </div>
               )}
+              {/* Points forts */}
+              {iaResult.points_forts?.length > 0 && (
+                <div>
+                  {iaResult.points_forts.map((p, i) => (
+                    <div key={i} style={{ color: '#16a34a', display: 'flex', gap: 5, alignItems: 'flex-start' }}>
+                      <span style={{ flexShrink: 0, color: '#16a34a', fontWeight: 700 }}>+</span><span>{p}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* Points faibles */}
               {iaResult.points_faibles?.length > 0 && (
-                <div style={{ color: '#dc2626' }}>✗ {iaResult.points_faibles.join(', ')}</div>
+                <div>
+                  {iaResult.points_faibles.map((p, i) => (
+                    <div key={i} style={{ color: '#dc2626', display: 'flex', gap: 5, alignItems: 'flex-start' }}>
+                      <span style={{ flexShrink: 0, color: '#dc2626', fontWeight: 700 }}>-</span><span>{p}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* Synthèse globale */}
+              {(iaResult.synthese || iaResult.recommandation_globale) && (
+                <div style={{ background: '#f0f9ff', borderRadius: 6, padding: '6px 10px', color: '#0369a1', fontSize: 12, marginTop: 2 }}>
+                  {iaResult.synthese || iaResult.recommandation_globale}
+                </div>
               )}
             </div>
           )}
-          {iaResult?.error && <div style={{ color: '#dc2626', fontSize: 13 }}>{iaResult.error}</div>}
+          {iaResult?.error && (
+            <div style={{ color: '#dc2626', fontSize: 13, background: '#fef2f2', borderRadius: 6, padding: '6px 10px' }}>
+              {iaResult.error}
+            </div>
+          )}
         </div>
       </div>
     </div>

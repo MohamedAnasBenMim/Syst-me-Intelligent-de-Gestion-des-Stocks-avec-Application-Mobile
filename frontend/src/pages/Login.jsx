@@ -151,7 +151,7 @@ export default function Login() {
 
           {justRegistered && (
             <div className="api-success">
-              ✓ Compte créé avec succès ! Connectez-vous.
+              Compte créé avec succès ! Connectez-vous.
             </div>
           )}
 

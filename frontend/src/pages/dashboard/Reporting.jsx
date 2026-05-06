@@ -160,7 +160,7 @@ function RapportModal({ onClose, onSaved }) {
       set('description', texte)
       if (!form.titre) {
         const now = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })
-        const typeLabel = TYPES_RAPPORT.find(t => t.value === form.type_rapport)?.label.replace('🤖 ', '') || ''
+        const typeLabel = TYPES_RAPPORT.find(t => t.value === form.type_rapport)?.label.replace('', '') || ''
         set('titre', `${typeLabel} — ${now}`)
       }
     } catch (err) {
@@ -463,6 +463,11 @@ function PLSection() {
                   <div className="pl-detail-row">
                     <span>Autres charges</span><span>{fmtTND(result.detail_depenses.autres)}</span>
                   </div>
+                  {result.detail_depenses.cout_achats > 0 && (
+                    <div className="pl-detail-row">
+                      <span>Coût des achats (COGS)</span><span>{fmtTND(result.detail_depenses.cout_achats)}</span>
+                    </div>
+                  )}
                   <div className="pl-detail-row pl-detail-row--total">
                     <span>Total</span><span>{fmtTND(result.detail_depenses.total)}</span>
                   </div>
@@ -480,7 +485,7 @@ function PLSection() {
                   )}
                   {result.analyse_ia.alerte_pertes_produits && (
                     <p className="pl-ia-text" style={{ color: '#DC3545', marginTop: 6 }}>
-                      ⚠️ {result.analyse_ia.alerte_pertes_produits}
+                      {result.analyse_ia.alerte_pertes_produits}
                     </p>
                   )}
                   {result.analyse_ia.depense_plus_elevee && (
@@ -751,7 +756,7 @@ export default function Reporting() {
                       return (
                         <tr key={i} style={enDanger ? { background: '#FFF5F5' } : {}}>
                           <td className="td-name">
-                            {enDanger && <span style={{ color: '#DC3545', marginRight: 4 }}>⚠</span>}
+                            {enDanger && <span style={{ color: '#DC3545', marginRight: 4, fontWeight: 700 }}>!</span>}
                             {p.produit_nom || `Produit #${p.produit_id}`}
                           </td>
                           <td>{p.stock_actuel ?? '—'}</td>
@@ -820,7 +825,7 @@ export default function Reporting() {
                         <td className="td-name">{r.titre || '—'}</td>
                         <td>
                           <span className="badge badge-navy">
-                            {TYPES_RAPPORT.find(t => t.value === r.type_rapport)?.label?.replace('🤖 ', '') || r.type_rapport}
+                            {TYPES_RAPPORT.find(t => t.value === r.type_rapport)?.label?.replace('', '') || r.type_rapport}
                           </span>
                         </td>
                         <td style={{ fontSize: 11, color: '#6B7280', maxWidth: 260 }}>

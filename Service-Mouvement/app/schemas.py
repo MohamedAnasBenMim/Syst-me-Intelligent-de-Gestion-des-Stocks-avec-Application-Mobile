@@ -19,10 +19,12 @@ class MouvementBase(BaseModel):
     # Source — obligatoire pour SORTIE et TRANSFERT
     entrepot_source_id  : Optional[int] = Field(None, gt=0, description="Obligatoire pour SORTIE et TRANSFERT")
     entrepot_source_nom : Optional[str] = Field(None, max_length=200, description="Copié depuis Service Warehouse pour l'historique")
+    source_type         : Optional[str] = Field(None, description="DEPOT | MAGASIN — type de la source")
 
     # Destination — obligatoire pour ENTREE et TRANSFERT
     entrepot_dest_id    : Optional[int] = Field(None, gt=0, description="Obligatoire pour ENTREE et TRANSFERT")
     entrepot_dest_nom   : Optional[str] = Field(None, max_length=200, description="Copié depuis Service Warehouse pour l'historique")
+    destination_type    : Optional[str] = Field(None, description="DEPOT | MAGASIN — type de la destination")
 
     # Zones (optionnel — granularité fine)
     zone_source_id      : Optional[int] = Field(None, gt=0)
@@ -34,6 +36,10 @@ class MouvementBase(BaseModel):
     reference           : Optional[str] = Field(None, max_length=100, description="Référence bon de livraison / commande")
     motif               : Optional[str] = Field(None, max_length=255, description="Raison du mouvement")
     note                : Optional[str] = Field(None, max_length=500, description="Note libre")
+
+    # Fournisseur (pour ENTREE uniquement)
+    fournisseur_id      : Optional[int] = Field(None, gt=0, description="ID fournisseur — uniquement pour ENTREE")
+    fournisseur_nom     : Optional[str] = Field(None, max_length=200, description="Dénormalisé depuis Service Stock")
 
 
 class MouvementCreate(MouvementBase):
@@ -141,6 +147,18 @@ class MouvementResponse(MouvementBase):
     created_at      : datetime
     updated_at      : Optional[datetime]  = None
     avertissements  : Optional[List[str]] = None
+
+    # Champs typés dépôt/magasin
+    source_type           : Optional[str] = None
+    source_depot_id       : Optional[int] = None
+    source_depot_nom      : Optional[str] = None
+    source_magasin_id     : Optional[int] = None
+    source_magasin_nom    : Optional[str] = None
+    destination_type      : Optional[str] = None
+    destination_depot_id  : Optional[int] = None
+    destination_depot_nom : Optional[str] = None
+    destination_magasin_id: Optional[int] = None
+    destination_magasin_nom: Optional[str]= None
 
     model_config = {"from_attributes": True}
 

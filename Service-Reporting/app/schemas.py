@@ -132,6 +132,7 @@ class DetailDepenses(BaseModel):
     salaires             : float
     pertes_produits      : float
     autres               : float
+    cout_achats          : float = 0.0   # COGS : coût des marchandises vendues
     total                : float
     salaires_auto        : bool   # True = calculé automatiquement
     pertes_produits_auto : bool   # True = calculé automatiquement
@@ -156,7 +157,8 @@ class ProduitPerimeDetail(BaseModel):
     quantite_restante : float
     prix_unitaire     : float
     valeur_perdue     : float
-    entrepot_id       : int
+    entrepot_id       : Optional[int] = None
+    location_type     : Optional[str] = None
 
 
 class PerteCategorieDetail(BaseModel):
@@ -233,6 +235,7 @@ class ProfitPerteHistorique(BaseModel):
     total_depenses   : float
     valeur_stock     : float
     chiffre_affaires : Optional[float] = 0.0
+    marge_brute      : Optional[float] = None
     profit           : float
     statut           : str
     calcule_par_nom  : Optional[str]

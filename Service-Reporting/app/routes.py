@@ -25,8 +25,11 @@ import httpx
 import json
 import pandas as pd
 import numpy as np
-from prophet import Prophet
-from sklearn.ensemble import IsolationForest
+try:
+    from prophet import Prophet
+    _PROPHET_AVAILABLE = True
+except ImportError:
+    _PROPHET_AVAILABLE = False
 
 from app.database import get_db
 from app.models import Rapport, Prevision, TypeRapport, StatutRapport, CalculProfitPerte
@@ -87,15 +90,15 @@ async def recuperer_mouvements(token: str) -> list:
 
 
 async def recuperer_entrepots(token: str) -> list:
-    """Récupère les entrepôts depuis Service Warehouse."""
+    """Récupère les dépôts depuis Service Warehouse."""
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(
-                f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/entrepots",
+                f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/depots",
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=10.0
             )
-            return r.json().get("entrepots", []) if r.status_code == 200 else []
+            return r.json().get("depots", []) if r.status_code == 200 else []
     except Exception:
         return []
 
@@ -146,10 +149,13 @@ async def calculer_kpi(token: str) -> KPIGlobaux:
     for e in entrepots:
         capacite_max = e.get("capacite_max", 0)
         if capacite_max and capacite_max > 0:
+            eid = e.get("id")
             stock_entrepot = sum(
                 s.get("quantite", 0)
                 for s in stocks
-                if s.get("entrepot_id") == e.get("id")
+                if s.get("depot_id") == eid
+                or s.get("magasin_id") == eid
+                or (s.get("entrepot_id") == eid and not s.get("depot_id") and not s.get("magasin_id"))
             )
             # Sanity check : si capacite_max < stock réel → valeur non configurée
             # On la met à jour dynamiquement pour ne pas afficher > 100%
@@ -166,19 +172,21 @@ async def calculer_kpi(token: str) -> KPIGlobaux:
     )
 
     # ── Valeur totale du stock ─────────────────────────
-    # Utilise l'API promotions/actives pour les prix promo (fiable)
-    promos_kpi = await recuperer_promotions_actives(token)
+    # Promo active → prix_promo; sinon → prix_achat (fallback: prix_unitaire)
+    promos_kpi   = await recuperer_promotions_actives(token)
     valeur_total = 0.0
     for s in stocks:
         produit    = s.get("produit") or {}
         quantite   = float(s.get("quantite", 0))
         pid        = s.get("produit_id")
+        prix_achat = float(produit.get("prix_achat") or 0)
         prix_unit  = float(produit.get("prix_unitaire") or 0)
         prix_promo = promos_kpi.get(pid, 0) or (float(produit.get("prix_promo") or 0) if produit.get("en_promotion") else 0)
         if prix_promo > 0:
             valeur_total += quantite * prix_promo
         else:
-            valeur_total += quantite * prix_unit
+            prix_ref = prix_achat if prix_achat > 0 else prix_unit
+            valeur_total += quantite * prix_ref
 
     return KPIGlobaux(
         total_produits        = len(set(s["produit_id"] for s in stocks)),
@@ -309,8 +317,17 @@ def predire_rupture_adaptative(
                                         f"régression linéaire sur {nb_jours} jours (R²={round(r2,2)})")
 
         # ════════════════════════════════════════════════
-        # CAS 4 — 30+ JOURS : Prophet
+        # CAS 4 — 30+ JOURS : Prophet (ou régression si indisponible)
         # ════════════════════════════════════════════════
+        if not _PROPHET_AVAILABLE:
+            X = np.arange(nb_jours).reshape(-1, 1)
+            y_vals = df["y"].values
+            model_lr = LinearRegression().fit(X, y_vals)
+            conso_lr = max(float(model_lr.predict([[nb_jours]])[0]), 0.1)
+            r2_lr = max(float(model_lr.score(X, y_vals)), 0.0)
+            return _construire_resultat(conso_lr, round(0.65 + r2_lr * 0.15, 2),
+                                        f"régression linéaire (Prophet indisponible, {nb_jours} jours)")
+
         modele     = Prophet(yearly_seasonality=False, weekly_seasonality=True,
                              daily_seasonality=False, interval_width=0.80)
         modele.fit(df.rename(columns={"ds": "ds", "y": "y"}))
@@ -785,7 +802,7 @@ async def recuperer_salaires_auto(token: str) -> tuple[float, dict | None]:
     return 0.0, None
 
 
-def _appeler_ia_analyse_pl(
+async def _appeler_ia_analyse_pl(
     eau: float,
     electricite: float,
     salaires: float,
@@ -797,7 +814,7 @@ def _appeler_ia_analyse_pl(
     statut: str,
 ) -> AnalyseIA | None:
     """
-    Appel synchrone IA-RAG pour analyser le P&L.
+    Appel async IA-RAG pour analyser le P&L.
     Timeout 5s — fallback None si indisponible.
     """
     try:
@@ -825,8 +842,8 @@ def _appeler_ia_analyse_pl(
             f"Donne 3 recommandations courtes et concrètes pour améliorer la rentabilité."
         )
 
-        with httpx.Client(timeout=5.0) as client:
-            r = client.post(
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
                 f"{settings.IA_RAG_SERVICE_URL}/api/v1/ia/question",
                 json={"question": prompt},
             )
@@ -869,7 +886,8 @@ def _construire_pertes_response(data: dict) -> PertesProduitsResponse:
                 quantite_restante = p["quantite_restante"],
                 prix_unitaire     = p["prix_unitaire"],
                 valeur_perdue     = p["valeur_perdue"],
-                entrepot_id       = p["entrepot_id"],
+                entrepot_id       = p.get("depot_id") or p.get("magasin_id"),
+                location_type     = p.get("location_type"),
             )
             for p in cat.get("produits", [])
         ]
@@ -983,9 +1001,8 @@ async def calculer_profit_perte(
     montant_pertes   = pertes_val   if pertes_auto   else data.pertes_produits
     montant_salaires = salaires_val if salaires_auto else data.salaires
 
-    # ── 3. Valeur du stock (hors périmés, prix promo depuis API) ──
-    # promos_map = {produit_id: prix_promo} depuis /promotions/actives
-    # Plus fiable que le flag en_promotion sur le produit
+    # ── 3. Valeur du stock (hors périmés) ──────────────────────────
+    # Promo active → prix_promo; sinon → prix_achat (fallback: prix_unitaire)
     nb_actifs  = 0
     nb_exclus  = 0
     val_normal = 0.0
@@ -996,11 +1013,11 @@ async def calculer_profit_perte(
         quantite   = float(s.get("quantite", 0))
         date_exp   = produit.get("date_expiration")
         pid        = s.get("produit_id")
-        prix_unit  = float(produit.get("prix_unitaire") or 0)
-        # Prix promo : priorité à l'API promotions/actives, fallback sur le produit
-        prix_promo_api = promos_map.get(pid, 0)
-        prix_promo_pdt = float(produit.get("prix_promo") or 0) if produit.get("en_promotion") else 0
-        prix_promo = prix_promo_api or prix_promo_pdt
+        prix_achat_unit = float(produit.get("prix_achat") or 0)
+        prix_unit       = float(produit.get("prix_unitaire") or 0)
+        prix_promo_api  = promos_map.get(pid, 0)
+        prix_promo_pdt  = float(produit.get("prix_promo") or 0) if produit.get("en_promotion") else 0
+        prix_promo      = prix_promo_api or prix_promo_pdt
 
         if date_exp:
             try:
@@ -1014,7 +1031,8 @@ async def calculer_profit_perte(
         if prix_promo > 0:
             val_promo += prix_promo * quantite
         else:
-            val_normal += prix_unit * quantite
+            prix_ref = prix_achat_unit if prix_achat_unit > 0 else prix_unit
+            val_normal += prix_ref * quantite
 
     valeur_stock = round(val_normal + val_promo, 2)
 
@@ -1025,36 +1043,45 @@ async def calculer_profit_perte(
         p   = s.get("produit") or {}
         pid = s.get("produit_id")
         prix_unit  = float(p.get("prix_unitaire") or 0)
+        prix_achat = float(p.get("prix_achat") or 0)
         prix_promo = promos_map.get(pid) or (float(p.get("prix_promo") or 0) if p.get("en_promotion") else 0)
         prix_par_produit[pid] = {
-            "prix":      prix_unit,
+            "prix":       prix_unit,
+            "prix_achat": prix_achat,
             "prix_vente": prix_promo if prix_promo > 0 else prix_unit,
         }
 
     chiffre_affaires = 0.0
+    cout_achats      = 0.0
     mouvements_sorties = [m for m in mouvements_all if m.get("type_mouvement") in ("sortie", "SORTIE")]
     for m in mouvements_sorties:
         pid = m.get("produit_id")
         qte = float(m.get("quantite", 0))
         info = prix_par_produit.get(pid, {})
         chiffre_affaires += qte * info.get("prix_vente", 0)
+        cout_achats      += qte * info.get("prix_achat", 0)
     chiffre_affaires = round(chiffre_affaires, 2)
+    cout_achats      = round(cout_achats, 2)
 
     # ── 5. Totaux ─────────────────────────────────────
-    total_depenses = round(
+    # Charges d'exploitation (hors coût d'achat des marchandises)
+    charges_exploit = round(
         data.eau + data.electricite + data.autres
         + montant_pertes + montant_salaires,
         2,
     )
-    # Profit = CA réel - charges (si CA > 0), sinon fallback sur valeur stock
-    base_calcul = chiffre_affaires if chiffre_affaires > 0 else valeur_stock
-    profit      = round(base_calcul - total_depenses, 2)
-    marge_brute = round(base_calcul - total_depenses, 2)
-    taux_marge  = round((marge_brute / base_calcul * 100), 2) if base_calcul > 0 else 0.0
+    total_depenses = round(charges_exploit + cout_achats, 2)
+
+    # Marge brute = CA - Coût d'achat des marchandises vendues (COGS)
+    # Profit net  = Marge brute - Charges d'exploitation
+    marge_brute = round(chiffre_affaires - cout_achats, 2)
+    profit      = round(marge_brute - charges_exploit, 2)
+
+    taux_marge = round((marge_brute / chiffre_affaires * 100), 2) if chiffre_affaires > 0 else 0.0
     statut = "benefice" if profit > 0 else ("perte" if profit < 0 else "equilibre")
 
     # ── 5. Analyse IA ─────────────────────────────────
-    analyse_ia = _appeler_ia_analyse_pl(
+    analyse_ia = await _appeler_ia_analyse_pl(
         eau             = data.eau,
         electricite     = data.electricite,
         salaires        = montant_salaires,
@@ -1076,6 +1103,7 @@ async def calculer_profit_perte(
         total_depenses          = total_depenses,
         valeur_stock            = valeur_stock,
         chiffre_affaires        = chiffre_affaires,
+        marge_brute             = marge_brute,
         profit                  = profit,
         statut                  = statut,
         analyse_ia              = json.dumps(analyse_ia.model_dump()) if analyse_ia else None,
@@ -1101,6 +1129,7 @@ async def calculer_profit_perte(
             salaires             = montant_salaires,
             pertes_produits      = montant_pertes,
             autres               = data.autres,
+            cout_achats          = cout_achats,
             total                = total_depenses,
             salaires_auto        = salaires_auto,
             pertes_produits_auto = pertes_auto,
@@ -1109,7 +1138,7 @@ async def calculer_profit_perte(
             nb_produits_actifs  = nb_actifs,
             nb_produits_exclus  = nb_exclus,
             valeur_stock_normal = round(val_normal, 2),
-            valeur_stock_promo  = round(val_promo, 2),
+            valeur_stock_promo  = 0.0,
             valeur_totale       = valeur_stock,
         ),
         pertes_produits = _construire_pertes_response(pertes_data) if pertes_data else None,

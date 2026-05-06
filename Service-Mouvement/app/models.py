@@ -8,9 +8,11 @@ import enum
 
 # ── Enum type de mouvement ─────────────────────────────────────
 class TypeMouvement(str, enum.Enum):
-    ENTREE    = "entree"     # Réception de marchandises
-    SORTIE    = "sortie"     # Expédition / consommation
-    TRANSFERT = "transfert"  # Transfert entre deux entrepôts
+    ENTREE                  = "entree"                   # Fournisseur → Dépôt
+    SORTIE                  = "sortie"                   # Sortie depuis Magasin
+    TRANSFERT               = "transfert"                # Legacy: entrepôt → entrepôt
+    TRANSFERT_DEPOT_MAGASIN = "transfert_depot_magasin"  # Dépôt → Magasin (approvisionnement)
+    RETOUR_MAGASIN_DEPOT    = "retour_magasin_depot"     # Magasin → Dépôt (retour)
 
 
 # ── Enum statut du mouvement ───────────────────────────────────
@@ -50,24 +52,38 @@ Les deux bases sont SÉPARÉES mouvement et stock!
     # Quantité
     quantite        = Column(Float, nullable=False)
 
-    # Entrepôt source (obligatoire pour SORTIE et TRANSFERT)
-    entrepot_source_id   = Column(Integer, nullable=True, index=True)
-    entrepot_source_nom  = Column(String(200), nullable=True)  # dénormalisé
+    # Entrepôt source (obligatoire pour SORTIE et TRANSFERT — legacy)
+    source_depot_id    = Column(Integer, nullable=True, index=True)
+    source_depot_nom  = Column(String(200), nullable=True)
 
-    # Entrepôt destination (obligatoire pour ENTREE et TRANSFERT)
-    entrepot_dest_id     = Column(Integer, nullable=True, index=True)
-    entrepot_dest_nom    = Column(String(200), nullable=True)  # dénormalisé
+    # Entrepôt destination (obligatoire pour ENTREE et TRANSFERT — legacy)
+    source_depot_id     = Column(Integer, nullable=True, index=True)
+    source_depot_nom    = Column(String(200), nullable=True)
 
-    # Zone source et destination (optionnel)
-    zone_source_id  = Column(Integer, nullable=True)
-    zone_source_nom = Column(String(200), nullable=True)
-    zone_dest_id    = Column(Integer, nullable=True)
-    zone_dest_nom   = Column(String(200), nullable=True)
+    
+
+    # Nouveau: source typée DEPOT / MAGASIN / FOURNISSEUR
+    source_type          = Column(String(20), nullable=True)  # "DEPOT","MAGASIN","FOURNISSEUR"
+    source_depot_id      = Column(Integer,    nullable=True)
+    source_depot_nom     = Column(String(200),nullable=True)
+    source_magasin_id    = Column(Integer,    nullable=True)
+    source_magasin_nom   = Column(String(200),nullable=True)
+
+    # Nouveau: destination typée DEPOT / MAGASIN
+    destination_type         = Column(String(20), nullable=True)  # "DEPOT","MAGASIN"
+    destination_depot_id     = Column(Integer,    nullable=True)
+    destination_depot_nom    = Column(String(200),nullable=True)
+    destination_magasin_id   = Column(Integer,    nullable=True)
+    destination_magasin_nom  = Column(String(200),nullable=True)
 
     # Informations complémentaires
     reference       = Column(String(100), nullable=True)   # référence bon de livraison
     motif           = Column(String(255), nullable=True)   # raison du mouvement
     note            = Column(String(500), nullable=True)   # note libre
+
+    # Fournisseur (pour les mouvements de type ENTREE)
+    fournisseur_id  = Column(Integer,     nullable=True)
+    fournisseur_nom = Column(String(200), nullable=True)   # dénormalisé
 
     # Utilisateur qui a effectué le mouvement (référence vers Service Auth)
     utilisateur_id  = Column(Integer, nullable=False)

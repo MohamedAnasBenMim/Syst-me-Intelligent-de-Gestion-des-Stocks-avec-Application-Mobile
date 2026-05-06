@@ -196,11 +196,14 @@ async def declencher_alerte(
 ):
     token = credentials.credentials
 
+    # Résoudre la localisation : depot_id/magasin_id ont la priorité sur entrepot_id
+    location_id = data.depot_id or data.magasin_id or data.entrepot_id or 0
+
     # ── Si niveau normal → résoudre les alertes actives ───
     if data.niveau == NiveauAlerte.NORMAL:
         alertes_actives = db.query(Alerte).filter(
             Alerte.produit_id  == data.produit_id,
-            Alerte.entrepot_id == data.entrepot_id,
+            Alerte.entrepot_id == location_id,
             Alerte.statut      == StatutAlerte.ACTIVE
         ).all()
         for alerte in alertes_actives:
@@ -211,7 +214,7 @@ async def declencher_alerte(
             niveau               = NiveauAlerte.NORMAL,
             statut               = StatutAlerte.RESOLUE,
             produit_id           = data.produit_id,
-            entrepot_id          = data.entrepot_id,
+            entrepot_id          = location_id,
             quantite_actuelle    = data.quantite_actuelle,
             notification_envoyee = False,
             created_at           = datetime.now()
@@ -222,7 +225,7 @@ async def declencher_alerte(
     # d'une nouvelle alerte critique lorsqu'une vieille alerte anomalie existe
     alerte_existante = db.query(Alerte).filter(
         Alerte.produit_id  == data.produit_id,
-        Alerte.entrepot_id == data.entrepot_id,
+        Alerte.entrepot_id == location_id,
         Alerte.niveau      == data.niveau,
         Alerte.statut      == StatutAlerte.ACTIVE,
         ~Alerte.message.contains("ANOMALIE"),
@@ -275,7 +278,7 @@ async def declencher_alerte(
         statut              = StatutAlerte.ACTIVE,
         produit_id          = data.produit_id,
         produit_nom         = data.produit_nom,
-        entrepot_id         = data.entrepot_id,
+        entrepot_id         = location_id,
         entrepot_nom        = data.entrepot_nom,
         quantite_actuelle   = data.quantite_actuelle,
         seuil_alerte_min    = data.seuil_alerte_min,
@@ -328,7 +331,8 @@ async def verifier_stocks_critiques(
 
     for stock in stocks:
         produit_id   = stock.get("produit_id")
-        entrepot_id  = stock.get("entrepot_id")
+        # Priorité : depot_id ou magasin_id, fallback sur entrepot_id (compat legacy)
+        entrepot_id  = stock.get("depot_id") or stock.get("magasin_id") or stock.get("entrepot_id") or 0
         quantite     = float(stock.get("quantite") or 0)
         produit_data = stock.get("produit") or {}
 
@@ -357,16 +361,22 @@ async def verifier_stocks_critiques(
         if existante:
             continue
 
-        # Récupérer nom entrepôt
-        entrepot_nom = f"Entrepôt {entrepot_id}"
+        # Récupérer nom dépôt ou magasin
+        entrepot_nom = f"Dépôt/Magasin {entrepot_id}"
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                rw = await client.get(
-                    f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/entrepots/{entrepot_id}",
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                if rw.status_code == 200:
-                    entrepot_nom = rw.json().get("nom", entrepot_nom)
+                loc_type = stock.get("location_type")
+                endpoints = (["depots", "magasins"] if loc_type == "DEPOT"
+                             else ["magasins", "depots"] if loc_type == "MAGASIN"
+                             else ["depots", "magasins"])
+                for ep in endpoints:
+                    rw = await client.get(
+                        f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/{ep}/{entrepot_id}",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    if rw.status_code == 200:
+                        entrepot_nom = rw.json().get("nom", entrepot_nom)
+                        break
         except Exception:
             pass
 
@@ -483,22 +493,29 @@ async def verifier_expirations_stock(
             if quantite <= 0:
                 continue  # pas de stock → pas d'alerte
 
-            entrepot_id  = stock.get("entrepot_id", 0)
-            entrepot_nom = f"Entrepôt {entrepot_id}"
+            # Priorité : depot_id ou magasin_id, fallback sur entrepot_id (compat legacy)
+            entrepot_id  = stock.get("depot_id") or stock.get("magasin_id") or stock.get("entrepot_id") or 0
+            entrepot_nom = f"Dépôt/Magasin {entrepot_id}"
 
-            # ── Récupérer le nom de l'entrepôt ──
+            # ── Récupérer le nom du dépôt ou magasin ──
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
-                    rw = await client.get(
-                        f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/entrepots/{entrepot_id}",
-                        headers={"Authorization": f"Bearer {token}"},
-                    )
-                    if rw.status_code == 200:
-                        entrepot_nom = rw.json().get("nom", entrepot_nom)
+                    loc_type  = stock.get("location_type")
+                    endpoints = (["depots", "magasins"] if loc_type == "DEPOT"
+                                 else ["magasins", "depots"] if loc_type == "MAGASIN"
+                                 else ["depots", "magasins"])
+                    for ep in endpoints:
+                        rw = await client.get(
+                            f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/{ep}/{entrepot_id}",
+                            headers={"Authorization": f"Bearer {token}"},
+                        )
+                        if rw.status_code == 200:
+                            entrepot_nom = rw.json().get("nom", entrepot_nom)
+                            break
             except Exception:
                 pass
 
-            # ── Vérifier qu'une alerte identique n'est pas déjà active ──
+                # ── Vérifier qu'une alerte identique n'est pas déjà active ──
             alerte_existante = db.query(Alerte).filter(
                 Alerte.produit_id  == produit_id,
                 Alerte.entrepot_id == entrepot_id,

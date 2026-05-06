@@ -63,7 +63,7 @@ def get_current_user(
     Retourne le payload contenant : user_id, email, role.
 
     Utilisation dans une route :
-        @router.get("/entrepots")
+        @router.get("/depots")
         def liste(current_user: dict = Depends(get_current_user)):
             ...
     """
@@ -80,8 +80,8 @@ def get_current_admin(
     Lève une HTTPException 403 si l'utilisateur n'est pas admin.
 
     Utilisation dans une route réservée à l'admin :
-        @router.post("/entrepots")
-        def creer_entrepot(current_user: dict = Depends(get_current_admin)):
+        @router.post("/depots")
+        def creer_depot(current_user: dict = Depends(get_current_admin)):
             ...
     """
     if current_user.get("role") != "admin":
@@ -100,8 +100,8 @@ def get_current_gestionnaire_or_admin(
     Lève une HTTPException 403 si l'utilisateur est un simple opérateur.
 
     Utilisation dans une route réservée au gestionnaire ou admin :
-        @router.post("/entrepots/{id}/zones")
-        def creer_zone(current_user: dict = Depends(get_current_gestionnaire_or_admin)):
+        @router.post("/depots/{id}/magasins")
+        def creer_magasin(current_user: dict = Depends(get_current_gestionnaire_or_admin)):
             ...
     """
     role = current_user.get("role")
@@ -133,7 +133,7 @@ def get_pagination(page: int = 1, per_page: int = 10) -> dict:
         ?page=1&per_page=10
 
     Utilisation dans une route :
-        @router.get("/entrepots")
+        @router.get("/depots")
         def liste(pagination: dict = Depends(get_pagination)):
             skip = pagination["skip"]
             limit = pagination["limit"]

@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react'
 import {
   Users, Plus, Pencil, Trash2, Loader, X, Eye, EyeOff,
-  ShieldAlert, Check, AlertTriangle, Search,
+  ShieldAlert, Check, AlertTriangle, Search, UserX, UserCheck,
 } from 'lucide-react'
 import DashboardLayout from '../../components/DashboardLayout'
 import { useAuth } from '../../context/AuthContext'
 import {
-  getUtilisateurs, createUtilisateur, updateUtilisateur, deleteUtilisateur,
+  getUtilisateurs, createUtilisateur, updateUtilisateur,
+  deleteUtilisateur, desactiverUtilisateur, reactiverUtilisateur,
 } from '../../services/api'
 import './Utilisateurs.css'
 
@@ -166,11 +167,7 @@ function UtilisateurModal({ mode, initial, onClose, onSaved }) {
 // ── Modal Confirmation Suppression ─────────────────────────
 function DeleteModal({ user, onClose, onConfirm }) {
   const [loading, setLoading] = useState(false)
-  async function confirm() {
-    setLoading(true)
-    await onConfirm()
-    setLoading(false)
-  }
+  async function confirm() { setLoading(true); await onConfirm(); setLoading(false) }
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal modal--sm">
@@ -184,13 +181,75 @@ function DeleteModal({ user, onClose, onConfirm }) {
             <p>
               Voulez-vous vraiment supprimer <strong>{user.prenom} {user.nom}</strong> ?
               <br />
-              <span className="delete-sub">Cette action est irréversible (désactivation du compte).</span>
+              <span className="delete-sub">Le compte sera définitivement supprimé. L'email sera libéré et pourra être réutilisé.</span>
             </p>
           </div>
           <div className="modal-footer">
             <button className="btn-cancel" onClick={onClose}>Annuler</button>
             <button className="btn-delete" onClick={confirm} disabled={loading}>
               {loading ? <><Loader size={14} className="spin" /> Suppression…</> : <><Trash2 size={14} /> Supprimer</>}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DeactivateModal({ user, onClose, onConfirm }) {
+  const [loading, setLoading] = useState(false)
+  async function confirm() { setLoading(true); await onConfirm(); setLoading(false) }
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal modal--sm">
+        <div className="modal-header">
+          <h2>Désactiver le compte</h2>
+          <button className="modal-close" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          <div className="delete-confirm">
+            <div className="delete-icon"><UserX size={28} color="#E8730A" /></div>
+            <p>
+              Voulez-vous désactiver le compte de <strong>{user.prenom} {user.nom}</strong> ?
+              <br />
+              <span className="delete-sub">Le compte sera suspendu. L'email reste réservé et ne peut pas être réutilisé.</span>
+            </p>
+          </div>
+          <div className="modal-footer">
+            <button className="btn-cancel" onClick={onClose}>Annuler</button>
+            <button className="btn-delete" style={{ background: '#E8730A' }} onClick={confirm} disabled={loading}>
+              {loading ? <><Loader size={14} className="spin" /> Désactivation…</> : <><UserX size={14} /> Désactiver</>}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ReactivateModal({ user, onClose, onConfirm }) {
+  const [loading, setLoading] = useState(false)
+  async function confirm() { setLoading(true); await onConfirm(); setLoading(false) }
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal modal--sm">
+        <div className="modal-header">
+          <h2>Réactiver le compte</h2>
+          <button className="modal-close" onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="modal-body">
+          <div className="delete-confirm">
+            <div className="delete-icon"><UserCheck size={28} color="#059669" /></div>
+            <p>
+              Voulez-vous réactiver le compte de <strong>{user.prenom} {user.nom}</strong> ?
+              <br />
+              <span className="delete-sub">Le compte sera réactivé et l'utilisateur pourra de nouveau se connecter.</span>
+            </p>
+          </div>
+          <div className="modal-footer">
+            <button className="btn-cancel" onClick={onClose}>Annuler</button>
+            <button className="btn-save" style={{ background: '#059669' }} onClick={confirm} disabled={loading}>
+              {loading ? <><Loader size={14} className="spin" /> Réactivation…</> : <><UserCheck size={14} /> Réactiver</>}
             </button>
           </div>
         </div>
@@ -252,7 +311,33 @@ export default function Utilisateurs() {
     try {
       await deleteUtilisateur(target.id)
       setUsers(prev => prev.filter(u => u.id !== target.id))
-      showToast(`${target.prenom} ${target.nom} a été supprimé.`)
+      showToast(`${target.prenom} ${target.nom} a été supprimé définitivement.`)
+    } catch (err) {
+      showToast(err.message, false)
+    } finally {
+      setModal(null)
+    }
+  }
+
+  async function handleDeactivate() {
+    const target = modal.user
+    try {
+      await desactiverUtilisateur(target.id)
+      setUsers(prev => prev.map(u => u.id === target.id ? { ...u, est_actif: false } : u))
+      showToast(`Compte de ${target.prenom} ${target.nom} désactivé.`)
+    } catch (err) {
+      showToast(err.message, false)
+    } finally {
+      setModal(null)
+    }
+  }
+
+  async function handleReactivate() {
+    const target = modal.user
+    try {
+      await reactiverUtilisateur(target.id)
+      setUsers(prev => prev.map(u => u.id === target.id ? { ...u, est_actif: true } : u))
+      showToast(`Compte de ${target.prenom} ${target.nom} réactivé.`)
     } catch (err) {
       showToast(err.message, false)
     } finally {
@@ -293,7 +378,7 @@ export default function Utilisateurs() {
             <Users size={22} color="var(--teal)" />
             <div>
               <h1>Gestion des utilisateurs</h1>
-              <p>{loading ? '…' : `${users.length} utilisateur${users.length > 1 ? 's' : ''} actif${users.length > 1 ? 's' : ''}`}</p>
+              <p>{loading ? '…' : (() => { const actifs = users.filter(u => u.est_actif).length; return `${actifs} actif${actifs > 1 ? 's' : ''}${users.length > actifs ? ` · ${users.length - actifs} désactivé${users.length - actifs > 1 ? 's' : ''}` : ''}` })()}</p>
             </div>
           </div>
           <button className="btn-create" onClick={() => setModal({ type: 'create' })}>
@@ -397,9 +482,29 @@ export default function Utilisateurs() {
                         >
                           <Pencil size={14} />
                         </button>
+                        {u.est_actif ? (
+                          <button
+                            className="action-btn"
+                            style={{ color: '#E8730A' }}
+                            title={isSelf ? 'Impossible de désactiver votre propre compte' : 'Désactiver'}
+                            disabled={isSelf}
+                            onClick={() => !isSelf && setModal({ type: 'deactivate', user: u })}
+                          >
+                            <UserX size={14} />
+                          </button>
+                        ) : (
+                          <button
+                            className="action-btn"
+                            style={{ color: '#059669' }}
+                            title="Réactiver le compte"
+                            onClick={() => setModal({ type: 'reactivate', user: u })}
+                          >
+                            <UserCheck size={14} />
+                          </button>
+                        )}
                         <button
                           className="action-btn delete"
-                          title={isSelf ? 'Impossible de supprimer votre propre compte' : 'Supprimer'}
+                          title={isSelf ? 'Impossible de supprimer votre propre compte' : 'Supprimer définitivement'}
                           disabled={isSelf}
                           onClick={() => !isSelf && setModal({ type: 'delete', user: u })}
                         >
@@ -429,6 +534,20 @@ export default function Utilisateurs() {
             initial={modal.user}
             onClose={() => setModal(null)}
             onSaved={handleSaved}
+          />
+        )}
+        {modal?.type === 'deactivate' && (
+          <DeactivateModal
+            user={modal.user}
+            onClose={() => setModal(null)}
+            onConfirm={handleDeactivate}
+          />
+        )}
+        {modal?.type === 'reactivate' && (
+          <ReactivateModal
+            user={modal.user}
+            onClose={() => setModal(null)}
+            onConfirm={handleReactivate}
           />
         )}
         {modal?.type === 'delete' && (

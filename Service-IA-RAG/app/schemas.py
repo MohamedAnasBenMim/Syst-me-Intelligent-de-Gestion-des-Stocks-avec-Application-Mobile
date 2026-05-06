@@ -32,8 +32,8 @@ class VectoriserResponse(BaseModel):
 # ══════════════════════════════════════════════════════════
 
 class RecommandationRequest(BaseModel):
-    produit_id:              int
-    entrepot_id:             int
+    produit_id:              Optional[int]   = None
+    entrepot_id:             Optional[int]   = None
     alerte_id:               Optional[int]   = None
     stock_actuel:            Optional[float] = None
     seuil_min:               Optional[float] = None

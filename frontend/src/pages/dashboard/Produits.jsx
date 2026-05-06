@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Package, Plus, Pencil, Trash2, Loader, X, Check, AlertTriangle, Search } from 'lucide-react'
 import DashboardLayout from '../../components/DashboardLayout'
 import { useAuth } from '../../context/AuthContext'
@@ -34,7 +34,7 @@ function BadgeMarge({ marge, type_produit, avertissement }) {
       padding: '2px 8px', fontSize: 12, fontWeight: 700,
       cursor: avertissement ? 'help' : 'default',
     }}>
-      {marge.toFixed(1)}% {avertissement ? '⚠️' : ''}
+      {marge.toFixed(1)}% 
     </span>
   )
 }
@@ -243,7 +243,7 @@ function ProduitModal({ mode, initial, onClose, onSaved }) {
                 color: margeOk ? '#16a34a' : '#d97706',
                 border: `1px solid ${margeOk ? '#bbf7d0' : '#fde68a'}`,
               }}>
-                {margeOk ? '✓' : '⚠️'} Marge calculée : {margePreview}%
+                {margeOk ? '' : '!'} Marge calculée : {margePreview}%
                 {!margeOk && (
                   <span style={{ marginLeft: 8, fontWeight: 400 }}>
                     (plage recommandée : {form.type_produit === 'NON_CONSOMMABLE' ? '25-80%' : '5-25%'})
@@ -382,6 +382,9 @@ export default function Produits() {
   const [modal,         setModal]         = useState(null)
   const [toast,         setToast]         = useState(null)
   const [scanLoading,   setScanLoading]   = useState(false)
+  const [pageSize,      setPageSize]      = useState(10)
+  const [page,          setPage]          = useState(1)
+  const [expandedIds,   setExpandedIds]   = useState(new Set())
 
   useEffect(() => { load() }, [])
 
@@ -487,6 +490,11 @@ export default function Produits() {
     return matchSearch && matchCat
   })
 
+  // ── Pagination ───────────────────────────────────────────────
+  const totalPages  = pageSize === 0 ? 1 : Math.ceil(filtered.length / pageSize)
+  const currentPage = Math.min(page, totalPages || 1)
+  const paginated   = pageSize === 0 ? filtered : filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+
   return (
     <DashboardLayout>
       <div className="page">
@@ -510,7 +518,7 @@ export default function Produits() {
               title="Scanner tous les produits et déclencher les alertes d'expiration proche"
               style={{ color: '#E8730A', borderColor: '#E8730A' }}
             >
-              {scanLoading ? <><Loader size={14} className="spin" /> Scan…</> : '📅 Scanner expirations'}
+              {scanLoading ? <><Loader size={14} className="spin" /> Scan…</> : 'Scanner expirations'}
             </button>
             {canWrite && (
               <button className="btn-primary" onClick={() => setModal({ type: 'create' })}>
@@ -527,12 +535,12 @@ export default function Produits() {
             <input
               placeholder="Rechercher par référence, désignation, catégorie…"
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={e => { setSearch(e.target.value); setPage(1) }}
             />
           </div>
 
           {search && (
-            <button className="btn-ghost" style={{ padding: '6px 10px' }} onClick={() => setSearch('')}>
+            <button className="btn-ghost" style={{ padding: '6px 10px' }} onClick={() => { setSearch(''); setPage(1) }}>
               <X size={14} />
             </button>
           )}
@@ -542,7 +550,7 @@ export default function Produits() {
               <div className="toolbar-sep" />
               <select
                 value={filterCat}
-                onChange={e => setFilterCat(e.target.value)}
+                onChange={e => { setFilterCat(e.target.value); setPage(1) }}
               >
                 <option value="">Toutes catégories</option>
                 {categories.map(c => (
@@ -551,6 +559,19 @@ export default function Produits() {
               </select>
             </>
           )}
+
+          <div className="toolbar-sep" />
+          <select
+            value={pageSize}
+            onChange={e => { setPageSize(Number(e.target.value)); setPage(1) }}
+            style={{ fontSize: 13 }}
+          >
+            <option value={5}>5 / page</option>
+            <option value={10}>10 / page</option>
+            <option value={25}>25 / page</option>
+            <option value={50}>50 / page</option>
+            <option value={0}>Tout afficher</option>
+          </select>
         </div>
 
         {/* ── Table ── */}
@@ -581,6 +602,7 @@ export default function Produits() {
               <table className="data-table">
                 <thead>
                   <tr>
+                    <th style={{ width: 36 }}></th>
                     <th>#</th>
                     <th>RÉFÉRENCE</th>
                     <th>DÉSIGNATION</th>
@@ -599,13 +621,28 @@ export default function Produits() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map(p => {
-                    const qte     = qteProduit[p.id] ?? null
-                    const expSt   = dateStatus(p.date_expiration)
-                    const fabSt   = p.date_fabrication ? { label: fmtDate(p.date_fabrication), color: '#6B7280', bg: null } : null
-                    const isLow   = qte !== null && qte <= (p.seuil_alerte_min ?? 0)
+                  {paginated.map(p => {
+                    const qte      = qteProduit[p.id] ?? null
+                    const expSt    = dateStatus(p.date_expiration)
+                    const fabSt    = p.date_fabrication ? { label: fmtDate(p.date_fabrication), color: '#6B7280', bg: null } : null
+                    const isLow    = qte !== null && qte <= (p.seuil_alerte_min ?? 0)
+                    const expanded = expandedIds.has(p.id)
+                    const toggle   = () => setExpandedIds(prev => {
+                      const next = new Set(prev)
+                      next.has(p.id) ? next.delete(p.id) : next.add(p.id)
+                      return next
+                    })
                     return (
-                      <tr key={p.id}>
+                      <React.Fragment key={p.id}>
+                      <tr style={{ background: expanded ? '#f0f5ff' : undefined }}>
+                        <td style={{ textAlign: 'center', paddingLeft: 8 }}>
+                          <input
+                            type="checkbox"
+                            checked={expanded}
+                            onChange={toggle}
+                            style={{ width: 15, height: 15, cursor: 'pointer', accentColor: '#0A4B78' }}
+                          />
+                        </td>
                         <td className="td-id">#{p.id}</td>
                         <td><span className="badge badge-teal">{p.reference}</span></td>
                         <td className="td-name">{p.designation}</td>
@@ -624,7 +661,7 @@ export default function Produits() {
                         <td><BadgeMarge marge={p.marge_calculee} type_produit={p.type_produit} avertissement={p.avertissement_marge} /></td>
                         <td style={{ fontWeight: 700, color: isLow ? '#DC3545' : '#1E1B4B' }}>
                           {qte !== null ? qte.toLocaleString('fr-FR') : '—'}
-                          {isLow && <span style={{ fontSize: 10, marginLeft: 4, color: '#DC3545' }}>⚠</span>}
+                          {isLow && <span style={{ fontSize: 10, marginLeft: 4, color: '#DC3545', fontWeight: 700 }}>!</span>}
                         </td>
                         <td className="text-muted">{p.seuil_alerte_min ?? '—'}</td>
                         <td className="text-muted">{p.seuil_alerte_max ?? '—'}</td>
@@ -657,10 +694,97 @@ export default function Produits() {
                           </div>
                         </td>
                       </tr>
+                      {expanded && (
+                        <tr key={`detail-${p.id}`} style={{ background: '#f8fafc' }}>
+                          <td colSpan={16} style={{ padding: '12px 24px', borderBottom: '2px solid #c7d2fe' }}>
+                            <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', fontSize: 13 }}>
+                              <div>
+                                <div style={{ fontWeight: 700, color: '#0A4B78', marginBottom: 6 }}>Prix</div>
+                                <div>Prix achat : <b>{p.prix_achat != null ? `${Number(p.prix_achat).toFixed(2)} MAD` : '—'}</b></div>
+                                <div>Prix vente : <b>{p.prix_vente  != null ? `${Number(p.prix_vente).toFixed(2)} MAD`  : '—'}</b></div>
+                                <div>Prix unitaire : <b>{p.prix_unitaire != null ? `${Number(p.prix_unitaire).toFixed(2)} MAD` : '—'}</b></div>
+                              </div>
+                              <div>
+                                <div style={{ fontWeight: 700, color: '#0A4B78', marginBottom: 6 }}>Type & vente</div>
+                                <div>Type : <b>{p.type_produit || '—'}</b></div>
+                                <div>Pattern : <b>{p.pattern_vente || '—'}</b></div>
+                                <div>Meilleur moment achat : <b>{p.meilleur_moment_achat || '—'}</b></div>
+                              </div>
+                              {(p.mois_debut_vente || p.mois_fin_vente || p.jours_pour_vendre) && (
+                                <div>
+                                  <div style={{ fontWeight: 700, color: '#0A4B78', marginBottom: 6 }}>Saisonnalité</div>
+                                  <div>Début vente : <b>{p.mois_debut_vente ?? '—'}</b></div>
+                                  <div>Fin vente : <b>{p.mois_fin_vente ?? '—'}</b></div>
+                                  <div>Jours pour vendre : <b>{p.jours_pour_vendre ?? '—'}</b></div>
+                                </div>
+                              )}
+                              <div>
+                                <div style={{ fontWeight: 700, color: '#0A4B78', marginBottom: 6 }}>Alertes stock</div>
+                                <div>Seuil min : <b>{p.seuil_alerte_min ?? '—'}</b></div>
+                                <div>Seuil max : <b>{p.seuil_alerte_max ?? '—'}</b></div>
+                                <div>Stock actuel : <b style={{ color: isLow ? '#DC3545' : '#16a34a' }}>{qte ?? '—'}{isLow ? ' — Bas' : ''}</b></div>
+                              </div>
+                              <div>
+                                <div style={{ fontWeight: 700, color: '#0A4B78', marginBottom: 6 }}>Infos</div>
+                                <div>Fournisseur : <b>{fournMap[p.id] || '—'}</b></div>
+                                <div>Statut : <b style={{ color: p.est_actif ? '#16a34a' : '#6b7280' }}>{p.est_actif ? 'Actif' : 'Inactif'}</b></div>
+                                {p.avertissement_marge && <div style={{ color: '#d97706' }}>{p.avertissement_marge}</div>}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </React.Fragment>
                     )
                   })}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {/* ── Pagination ── */}
+          {!loading && !error && pageSize > 0 && totalPages > 1 && (
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '12px 20px', borderTop: '1px solid #e5e7eb', fontSize: 13, color: '#6b7280',
+            }}>
+              <span>
+                Page {currentPage} / {totalPages} — {filtered.length} produit{filtered.length > 1 ? 's' : ''}
+              </span>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  onClick={() => setPage(1)}
+                  disabled={currentPage === 1}
+                  style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', cursor: currentPage === 1 ? 'not-allowed' : 'pointer', color: currentPage === 1 ? '#d1d5db' : '#374151' }}
+                >«</button>
+                <button
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', cursor: currentPage === 1 ? 'not-allowed' : 'pointer', color: currentPage === 1 ? '#d1d5db' : '#374151' }}
+                >‹</button>
+                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                  const start = Math.max(1, Math.min(currentPage - 2, totalPages - 4))
+                  const p = start + i
+                  return p <= totalPages ? (
+                    <button key={p} onClick={() => setPage(p)} style={{
+                      padding: '4px 10px', borderRadius: 6, border: '1px solid #e5e7eb',
+                      background: p === currentPage ? '#0A4B78' : '#fff',
+                      color: p === currentPage ? '#fff' : '#374151',
+                      fontWeight: p === currentPage ? 700 : 400, cursor: 'pointer',
+                    }}>{p}</button>
+                  ) : null
+                })}
+                <button
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', cursor: currentPage === totalPages ? 'not-allowed' : 'pointer', color: currentPage === totalPages ? '#d1d5db' : '#374151' }}
+                >›</button>
+                <button
+                  onClick={() => setPage(totalPages)}
+                  disabled={currentPage === totalPages}
+                  style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', cursor: currentPage === totalPages ? 'not-allowed' : 'pointer', color: currentPage === totalPages ? '#d1d5db' : '#374151' }}
+                >»</button>
+              </div>
             </div>
           )}
         </div>

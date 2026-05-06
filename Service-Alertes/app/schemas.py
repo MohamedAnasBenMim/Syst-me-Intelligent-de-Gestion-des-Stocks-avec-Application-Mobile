@@ -19,16 +19,22 @@ class AlerteDeclenchement(BaseModel):
 
     Si niveau = normal → résoudre les alertes actives
     Si niveau != normal → créer une nouvelle alerte
+
+    entrepot_id = champ dénormalisé : = depot_id ou magasin_id selon location_type
     """
     produit_id       : int          = Field(..., gt=0)
     produit_nom      : Optional[str] = None
-    entrepot_id      : int          = Field(..., gt=0)
+    entrepot_id      : Optional[int] = Field(None, ge=0)   # dénorm. = depot_id ou magasin_id
     entrepot_nom     : Optional[str] = None
     niveau           : NiveauAlerte
     quantite_actuelle: float        = Field(..., ge=0)
     seuil_alerte_min : Optional[float] = None
     seuil_alerte_max : Optional[float] = None
     message          : Optional[str] = None
+    # Champs de localisation explicites (préférés à entrepot_id)
+    location_type    : Optional[str] = None   # "DEPOT" | "MAGASIN"
+    depot_id         : Optional[int] = None
+    magasin_id       : Optional[int] = None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -42,7 +48,7 @@ class AlerteResponse(BaseModel):
     statut              : StatutAlerte
     produit_id          : int
     produit_nom         : Optional[str] = None
-    entrepot_id         : int
+    entrepot_id         : Optional[int] = None   # = depot_id ou magasin_id selon location_type
     entrepot_nom        : Optional[str] = None
     quantite_actuelle   : float
     seuil_alerte_min    : Optional[float] = None

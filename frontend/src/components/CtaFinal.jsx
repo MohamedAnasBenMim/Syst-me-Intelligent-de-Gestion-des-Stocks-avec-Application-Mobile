@@ -28,7 +28,7 @@ export default function CtaFinal() {
             </div>
             <div className="cta-perks">
               {['Aucune carte requise', 'Configuration en 5 min', 'Annulable à tout moment'].map(p => (
-                <span key={p} className="cta-perk">✓ {p}</span>
+                <span key={p} className="cta-perk">{p}</span>
               ))}
             </div>
           </div>

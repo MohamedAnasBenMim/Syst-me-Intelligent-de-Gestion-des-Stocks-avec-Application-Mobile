@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { RefreshCw, Brain, AlertCircle, AlertTriangle, CheckCircle, Package,
          Warehouse, Loader, Check, X, Send } from 'lucide-react'
 import DashboardLayout from '../../components/DashboardLayout'
-import { getPrevisions, getRecommandations, sendFeedback, askQuestion, createRecommandation } from '../../services/api'
+import { getPrevisions, getRecommandations, sendFeedback, askQuestion, createRecommandation, createMouvement } from '../../services/api'
 import { useAuth } from '../../context/AuthContext'
 import './Reapprovisionnement.css'
 
@@ -268,7 +268,7 @@ function RecommandationCard({ rec, onFeedback }) {
         rating:          rating   || undefined,
         comment:         comment  || undefined,
         quantite_reelle: qteReelle !== '' ? Number(qteReelle) : undefined,
-      })
+      }, rec)
       setPhase(action === 'rejetee' ? 'rejected' : 'accepted')
     } catch (e) {
       setFbError(e?.message || 'Erreur lors de l\'envoi du feedback.')
@@ -319,7 +319,7 @@ function RecommandationCard({ rec, onFeedback }) {
               color: joursExpActuels <= 3 ? '#DC3545' : joursExpActuels <= 7 ? '#B45309' : '#28A745',
             }}>
               {joursExpActuels <= 0
-                ? '⚠ Expiré'
+                ? 'Expiré'
                 : `⏱ Expire dans ${joursExpActuels}j`}
             </span>
           )}
@@ -555,13 +555,48 @@ export default function Reapprovisionnement() {
   async function handleCommander(prevision) {
     setGenLoading(true)
     setGenResult(null)
+
+    // Cas 1 : prévision IA avec produit + entrepôt → créer mouvement d'entrée direct
+    if (prevision.produit_id && prevision.entrepot_id) {
+      try {
+        const qte = Math.round(prevision.quantite_a_commander) || 1
+        await createMouvement({
+          type_mouvement:   'entree',
+          produit_id:       prevision.produit_id,
+          quantite:         qte,
+          entrepot_dest_id: prevision.entrepot_id,
+          destination_type: 'DEPOT',
+          motif: `Commande réapprovisionnement — ${prevision.produit_nom} (${prevision.entrepot_nom})`,
+        })
+        setGenResult(
+          `Commande enregistrée : ${qte} unités de ${prevision.produit_nom} → ${prevision.entrepot_nom}. ` +
+          `Les alertes associées seront résolues automatiquement si le stock repasse au-dessus du seuil.`
+        )
+        // Générer recommandation IA en background (non bloquant)
+        createRecommandation({
+          produit_id:              prevision.produit_id,
+          entrepot_id:             prevision.entrepot_id,
+          stock_actuel:            prevision.stock_actuel,
+          seuil_min:               prevision.seuil_min,
+          contexte_supplementaire: `Commande passée : ${qte} unités. Rupture prévue dans ${prevision.jours_avant_rupture} jours.`,
+        }).then(() => fetchRecs()).catch(() => {})
+        fetchPrevisions()
+      } catch (e) {
+        setGenResult(`Erreur: ${e.message}`)
+      } finally {
+        setGenLoading(false)
+      }
+      return
+    }
+
+    // Cas 2 : demande manuelle libre (modal) → générer recommandation IA uniquement
     try {
       const rep = await createRecommandation({
-        produit_id:              prevision.produit_id,
-        entrepot_id:             prevision.entrepot_id,
+        produit_id:              prevision.produit_id  || null,
+        entrepot_id:             prevision.entrepot_id || null,
         stock_actuel:            prevision.stock_actuel,
         seuil_min:               prevision.seuil_min,
-        contexte_supplementaire: `Rupture prévue dans ${prevision.jours_avant_rupture} jours. Commander ${prevision.quantite_a_commander} unités.`,
+        contexte_supplementaire: prevision.contexte_supplementaire,
       })
       setGenResult(rep.titre + ' — ' + rep.contenu)
       fetchRecs()
@@ -572,8 +607,28 @@ export default function Reapprovisionnement() {
     }
   }
 
-  async function handleFeedback(id, feedback) {
+  async function handleFeedback(id, feedback, rec) {
     await sendFeedback(id, feedback)
+
+    // Auto-create mouvement d'entrée when accepting a recommendation
+    if (feedback.action_taken === 'acceptee' && rec?.produit_id && rec?.entrepot_id) {
+      const qte = feedback.quantite_reelle || rec.quantite_suggeree
+      if (qte > 0) {
+        try {
+          await createMouvement({
+            type_mouvement:   'entree',
+            produit_id:       rec.produit_id,
+            quantite:         Number(qte),
+            entrepot_dest_id: rec.entrepot_id,
+            destination_type: 'DEPOT',
+            motif:            `Réapprovisionnement IA — ${rec.titre || 'Recommandation acceptée'}`,
+          })
+        } catch (e) {
+          console.warn('Mouvement auto-entrée échoué:', e.message)
+        }
+      }
+    }
+
     await fetchRecs()
   }
 
@@ -638,7 +693,7 @@ export default function Reapprovisionnement() {
                   <div style={{ display: 'flex', gap: 12, padding: '8px 0 12px', flexWrap: 'wrap' }}>
                     <span style={{ fontSize: 12, color: enDanger.length ? '#DC3545' : '#28A745', fontWeight: 600 }}>
                       {enDanger.length > 0
-                        ? `⚠ ${enDanger.length} produit(s) à risque dans les ${seuilJours} prochains jours`
+                        ? `${enDanger.length} produit(s) à risque dans les ${seuilJours} prochains jours`
                         : `✔ Aucune rupture dans les ${seuilJours} prochains jours`}
                     </span>
                     <span style={{ fontSize: 12, color: '#6B7280' }}>
@@ -775,9 +830,11 @@ export default function Reapprovisionnement() {
                 <button
                   className="btn-primary"
                   disabled={!form.question.trim() || genLoading}
-                  onClick={() => handleCommander({ produit_nom: 'produit', entrepot_nom: 'entrepôt',
-                    stock_actuel: 0, seuil_min: 0, jours_avant_rupture: 0, quantite_a_commander: 0,
-                    contexte_supplementaire: form.question })}
+                  onClick={() => handleCommander({
+                    produit_id: null, entrepot_id: null,
+                    stock_actuel: 0, seuil_min: 0,
+                    contexte_supplementaire: form.question,
+                  })}
                 >
                   {genLoading
                     ? <><Loader size={14} className="spin" /> Génération…</>

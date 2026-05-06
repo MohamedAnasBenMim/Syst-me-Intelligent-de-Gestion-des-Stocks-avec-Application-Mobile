@@ -30,7 +30,6 @@ import Dashboard           from './pages/dashboard/Dashboard'
 import Reapprovisionnement from './pages/dashboard/Reapprovisionnement'
 import IaRag               from './pages/dashboard/IaRag'
 import Utilisateurs        from './pages/dashboard/Utilisateurs'
-import Entrepots           from './pages/dashboard/Entrepots'
 import Produits            from './pages/dashboard/Produits'
 import Stocks              from './pages/dashboard/Stocks'
 import Mouvements          from './pages/dashboard/Mouvements'
@@ -40,6 +39,9 @@ import Reporting           from './pages/dashboard/Reporting'
 import Parametres          from './pages/dashboard/Parametres'
 import Promotions          from './pages/dashboard/Promotions'
 import Fournisseurs        from './pages/dashboard/Fournisseurs'
+import Depots             from './pages/dashboard/Depots'
+import Magasins           from './pages/dashboard/Magasins'
+import Transferts         from './pages/dashboard/Transferts'
 
 function LandingPage() {
   return (
@@ -94,9 +96,6 @@ export default function App() {
             <Route path="/dashboard/utilisateurs" element={
               <PrivateRoute><Utilisateurs /></PrivateRoute>
             } />
-            <Route path="/dashboard/entrepots" element={
-              <PrivateRoute><Entrepots /></PrivateRoute>
-            } />
             <Route path="/dashboard/produits" element={
               <PrivateRoute><Produits /></PrivateRoute>
             } />
@@ -123,6 +122,15 @@ export default function App() {
             } />
             <Route path="/dashboard/fournisseurs" element={
               <PrivateRoute><Fournisseurs /></PrivateRoute>
+            } />
+            <Route path="/dashboard/depots" element={
+              <PrivateRoute><Depots /></PrivateRoute>
+            } />
+            <Route path="/dashboard/magasins" element={
+              <PrivateRoute><Magasins /></PrivateRoute>
+            } />
+            <Route path="/dashboard/transferts" element={
+              <PrivateRoute><Transferts /></PrivateRoute>
             } />
           </Routes>
         </AuthProvider>

@@ -33,25 +33,36 @@ security = HTTPBearer()
 # ═══════════════════════════════════════════════════════════
 
 async def appeler_stock_augmenter(
-    produit_id   : int,
-    entrepot_id  : int,
-    quantite     : float,
-    token        : str,
-    mouvement_ref: Optional[str] = None
+    produit_id    : int,
+    location_id   : int,   # = depot_id si DEPOT, = magasin_id si MAGASIN
+    quantite      : float,
+    token         : str,
+    mouvement_ref : Optional[str] = None,
+    location_type : Optional[str] = None,   # "DEPOT" | "MAGASIN"
 ) -> dict:
     """
     Appelle Service Stock PATCH /stocks/augmenter.
     Utilisé pour ENTREE (entrepot_dest) et TRANSFERT (entrepot_dest).
+    location_id = depot_id ou magasin_id selon location_type.
     """
+    payload = {
+        "produit_id"    : produit_id,
+        "quantite"      : quantite,
+        "mouvement_ref" : mouvement_ref,
+    }
+    if location_type == "DEPOT":
+        payload["depot_id"]      = location_id
+        payload["location_type"] = "DEPOT"
+    elif location_type == "MAGASIN":
+        payload["magasin_id"]    = location_id
+        payload["location_type"] = "MAGASIN"
+    else:
+        payload["entrepot_id"] = location_id   # compat legacy sans location_type
+
     async with httpx.AsyncClient() as client:
         response = await client.patch(
             f"{settings.STOCK_SERVICE_URL}/api/v1/stocks/augmenter",
-            json={
-                "produit_id"    : produit_id,
-                "entrepot_id"   : entrepot_id,
-                "quantite"      : quantite,
-                "mouvement_ref" : mouvement_ref
-            },
+            json=payload,
             headers={"Authorization": f"Bearer {token}"},
             timeout=10.0
         )
@@ -64,26 +75,37 @@ async def appeler_stock_augmenter(
 
 
 async def appeler_stock_diminuer(
-    produit_id   : int,
-    entrepot_id  : int,
-    quantite     : float,
-    token        : str,
-    mouvement_ref: Optional[str] = None
+    produit_id    : int,
+    location_id   : int,   # = depot_id si DEPOT, = magasin_id si MAGASIN
+    quantite      : float,
+    token         : str,
+    mouvement_ref : Optional[str] = None,
+    location_type : Optional[str] = None,   # "DEPOT" | "MAGASIN"
 ) -> dict:
     """
     Appelle Service Stock PATCH /stocks/diminuer.
     Utilisé pour SORTIE (entrepot_source) et TRANSFERT (entrepot_source).
+    location_id = depot_id ou magasin_id selon location_type.
     Si stock insuffisant → Service Stock retourne 400 → on propage l'erreur.
     """
+    payload = {
+        "produit_id"    : produit_id,
+        "quantite"      : quantite,
+        "mouvement_ref" : mouvement_ref,
+    }
+    if location_type == "DEPOT":
+        payload["depot_id"]      = location_id
+        payload["location_type"] = "DEPOT"
+    elif location_type == "MAGASIN":
+        payload["magasin_id"]    = location_id
+        payload["location_type"] = "MAGASIN"
+    else:
+        payload["entrepot_id"] = location_id   # compat legacy sans location_type
+
     async with httpx.AsyncClient() as client:
         response = await client.patch(
             f"{settings.STOCK_SERVICE_URL}/api/v1/stocks/diminuer",
-            json={
-                "produit_id"    : produit_id,
-                "entrepot_id"   : entrepot_id,
-                "quantite"      : quantite,
-                "mouvement_ref" : mouvement_ref
-            },
+            json=payload,
             headers={"Authorization": f"Bearer {token}"},
             timeout=10.0
         )
@@ -169,21 +191,29 @@ async def indexer_mouvement_dans_rag(mouvement_id: int, produit_id: int,
         pass  # IA-RAG indisponible → on continue sans bloquer
 
 
-async def recuperer_nom_entrepot(entrepot_id: int, token: str) -> str:
+async def recuperer_nom_entrepot(entrepot_id: int, token: str, location_type: Optional[str] = None) -> str:
     """
-    Appelle Service Warehouse GET /entrepots/{id}
-    pour récupérer le nom de l'entrepôt (dénormalisation).
-    Retourne "Entrepôt {id}" si le service ne répond pas.
+    Résout le nom d'un dépôt ou magasin depuis Service Warehouse.
+    Essaie /depots/{id} puis /magasins/{id} si le premier échoue.
     """
+    headers = {"Authorization": f"Bearer {token}"}
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/entrepots/{entrepot_id}",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=5.0
-            )
-        if response.status_code == 200:
-            return response.json().get("nom", f"Entrepôt {entrepot_id}")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            endpoints = []
+            if location_type == "DEPOT":
+                endpoints = ["depots", "magasins"]
+            elif location_type == "MAGASIN":
+                endpoints = ["magasins", "depots"]
+            else:
+                endpoints = ["depots", "magasins"]
+
+            for ep in endpoints:
+                r = await client.get(
+                    f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/{ep}/{entrepot_id}",
+                    headers=headers,
+                )
+                if r.status_code == 200:
+                    return r.json().get("nom", f"Entrepôt {entrepot_id}")
     except Exception:
         pass
     return f"Entrepôt {entrepot_id}"
@@ -308,7 +338,7 @@ async def declencher_alerte_expiration(
     Ne bloque pas si le service ne répond pas.
     """
     message = (
-        f"📅 EXPIRATION PROCHE — {produit_nom} dans {entrepot_nom} — "
+        f"EXPIRATION PROCHE — {produit_nom} dans {entrepot_nom} — "
         f"Date d'expiration : {date_expiration} (dans {jours_restants} jour(s)) — "
         f"Quantité en stock : {quantite} — "
         f"Recommandation IA : envisager une promotion pour écouler le stock avant expiration."
@@ -350,6 +380,39 @@ async def recuperer_nom_produit(produit_id: int, token: str) -> str:
     except Exception:
         pass
     return f"Produit {produit_id}"
+
+
+async def appeler_warehouse_update_capacite(
+    location_id   : int,
+    delta         : float,
+    token         : str,
+    location_type : Optional[str] = None,
+) -> None:
+    """
+    Met à jour capacite_utilisee dans Service-Warehouse (best-effort).
+    location_type "DEPOT" → PATCH /depots/{id}/capacite
+    location_type "MAGASIN" → PATCH /magasins/{id}/capacite
+    Sans location_type → essaie les deux.
+    """
+    if not location_id:
+        return
+    endpoints = (
+        ["depots"]   if location_type == "DEPOT"
+        else ["magasins"] if location_type == "MAGASIN"
+        else ["depots", "magasins"]
+    )
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for ep in endpoints:
+                r = await client.patch(
+                    f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/{ep}/{location_id}/capacite",
+                    json={"delta": delta},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if r.status_code == 200:
+                    break
+    except Exception:
+        pass
 
 
 # ═══════════════════════════════════════════════════════════
@@ -428,13 +491,13 @@ async def creer_mouvement(
     entrepot_source_nom = data.entrepot_source_nom
     if data.entrepot_source_id and not entrepot_source_nom:
         entrepot_source_nom = await recuperer_nom_entrepot(
-            data.entrepot_source_id, token
+            data.entrepot_source_id, token, location_type=data.source_type
         )
 
     entrepot_dest_nom = data.entrepot_dest_nom
     if data.entrepot_dest_id and not entrepot_dest_nom:
         entrepot_dest_nom = await recuperer_nom_entrepot(
-            data.entrepot_dest_id, token
+            data.entrepot_dest_id, token, location_type=data.destination_type
         )
 
     # ── Récupérer les noms des zones selon le type de mouvement ──
@@ -450,24 +513,24 @@ async def creer_mouvement(
 
     # ── Orchestration selon le type de mouvement ──────────────
     if data.type_mouvement == TypeMouvement.ENTREE:
-        # Augmenter le stock de l'entrepôt destination
         await appeler_stock_augmenter(
-            produit_id   = data.produit_id,
-            entrepot_id  = data.entrepot_dest_id,
-            quantite     = data.quantite,
-            token        = token,
-            mouvement_ref= data.reference
+            produit_id    = data.produit_id,
+            location_id   = data.entrepot_dest_id,
+            quantite      = data.quantite,
+            token         = token,
+            mouvement_ref = data.reference,
+            location_type = data.destination_type,
         )
 
     elif data.type_mouvement == TypeMouvement.SORTIE:
-        # Diminuer le stock de l'entrepôt source
         try:
             await appeler_stock_diminuer(
-                produit_id   = data.produit_id,
-                entrepot_id  = data.entrepot_source_id,
-                quantite     = data.quantite,
-                token        = token,
-                mouvement_ref= data.reference
+                produit_id    = data.produit_id,
+                location_id   = data.entrepot_source_id,
+                quantite      = data.quantite,
+                token         = token,
+                mouvement_ref = data.reference,
+                location_type = data.source_type,
             )
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {}
@@ -476,23 +539,24 @@ async def creer_mouvement(
                     produit_id          = data.produit_id,
                     produit_nom         = produit_nom,
                     entrepot_id         = data.entrepot_source_id,
-                    entrepot_nom        = entrepot_source_nom or f"Entrepôt {data.entrepot_source_id}",
+                    entrepot_nom        = entrepot_source_nom or f"Dépôt/Magasin {data.entrepot_source_id}",
                     quantite_demandee   = data.quantite,
                     quantite_disponible = detail.get("disponible", 0),
                     type_mouvement      = "SORTIE",
                     token               = token,
                 )
-            raise  # bloque le mouvement
+            raise
 
     elif data.type_mouvement == TypeMouvement.TRANSFERT:
-        # Étape 1 — Diminuer le stock source
+        # Étape 1 — Diminuer le stock source (dépôt)
         try:
             await appeler_stock_diminuer(
-                produit_id   = data.produit_id,
-                entrepot_id  = data.entrepot_source_id,
-                quantite     = data.quantite,
-                token        = token,
-                mouvement_ref= data.reference
+                produit_id    = data.produit_id,
+                location_id   = data.entrepot_source_id,
+                quantite      = data.quantite,
+                token         = token,
+                mouvement_ref = data.reference,
+                location_type = data.source_type,
             )
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, dict) else {}
@@ -501,46 +565,74 @@ async def creer_mouvement(
                     produit_id          = data.produit_id,
                     produit_nom         = produit_nom,
                     entrepot_id         = data.entrepot_source_id,
-                    entrepot_nom        = entrepot_source_nom or f"Entrepôt {data.entrepot_source_id}",
+                    entrepot_nom        = entrepot_source_nom or f"Dépôt/Magasin {data.entrepot_source_id}",
                     quantite_demandee   = data.quantite,
                     quantite_disponible = detail.get("disponible", 0),
                     type_mouvement      = "TRANSFERT",
                     token               = token,
                 )
-            raise  # bloque le mouvement
-        # Étape 2 — Augmenter le stock destination
+            raise
+        # Étape 2 — Augmenter le stock destination (magasin)
         await appeler_stock_augmenter(
-            produit_id   = data.produit_id,
-            entrepot_id  = data.entrepot_dest_id,
-            quantite     = data.quantite,
-            token        = token,
-            mouvement_ref= data.reference
+            produit_id    = data.produit_id,
+            location_id   = data.entrepot_dest_id,
+            quantite      = data.quantite,
+            token         = token,
+            mouvement_ref = data.reference,
+            location_type = data.destination_type,
         )
 
     # ── Enregistrer le mouvement dans sgs_mouvement ───────────
+    # Mapper entrepot_source_id/dest_id vers les colonnes typées du modèle
+    src_is_magasin = data.source_type == "MAGASIN"
+    dst_is_magasin = data.destination_type == "MAGASIN"
+
     nouveau_mouvement = Mouvement(
-        type_mouvement      = data.type_mouvement,
-        statut              = StatutMouvement.VALIDE,
-        produit_id          = data.produit_id,
-        produit_nom         = produit_nom,
-        quantite            = data.quantite,
-        entrepot_source_id  = data.entrepot_source_id,
-        entrepot_source_nom = entrepot_source_nom,
-        entrepot_dest_id    = data.entrepot_dest_id,
-        entrepot_dest_nom   = entrepot_dest_nom,
-        zone_source_id      = data.zone_source_id,
-        zone_source_nom     = zone_source_nom,
-        zone_dest_id        = data.zone_dest_id,
-        zone_dest_nom       = zone_dest_nom,
-        reference           = data.reference,
-        motif               = data.motif,
-        note                = data.note,
-        utilisateur_id      = current_user.get("user_id"),
-        utilisateur_nom     = current_user.get("email") or current_user.get("nom"),
+        type_mouvement          = data.type_mouvement,
+        statut                  = StatutMouvement.VALIDE,
+        produit_id              = data.produit_id,
+        produit_nom             = produit_nom,
+        quantite                = data.quantite,
+        source_type             = data.source_type,
+        source_depot_id         = data.entrepot_source_id if not src_is_magasin else None,
+        source_depot_nom        = entrepot_source_nom     if not src_is_magasin else None,
+        source_magasin_id       = data.entrepot_source_id if src_is_magasin else None,
+        source_magasin_nom      = entrepot_source_nom     if src_is_magasin else None,
+        destination_type        = data.destination_type,
+        destination_depot_id    = data.entrepot_dest_id   if not dst_is_magasin else None,
+        destination_depot_nom   = entrepot_dest_nom       if not dst_is_magasin else None,
+        destination_magasin_id  = data.entrepot_dest_id   if dst_is_magasin else None,
+        destination_magasin_nom = entrepot_dest_nom       if dst_is_magasin else None,
+        reference               = data.reference,
+        motif                   = data.motif,
+        note                    = data.note,
+        fournisseur_id          = data.fournisseur_id,
+        fournisseur_nom         = data.fournisseur_nom,
+        utilisateur_id          = current_user.get("user_id"),
+        utilisateur_nom         = current_user.get("email") or current_user.get("nom"),
     )
     db.add(nouveau_mouvement)
     db.commit()
     db.refresh(nouveau_mouvement)
+
+    # ── Mise à jour taux d'occupation dans Service-Warehouse (best-effort) ──
+    if data.type_mouvement == TypeMouvement.ENTREE and data.entrepot_dest_id:
+        await appeler_warehouse_update_capacite(
+            data.entrepot_dest_id, data.quantite, token, data.destination_type
+        )
+    elif data.type_mouvement == TypeMouvement.SORTIE and data.entrepot_source_id:
+        await appeler_warehouse_update_capacite(
+            data.entrepot_source_id, -data.quantite, token, data.source_type
+        )
+    elif data.type_mouvement == TypeMouvement.TRANSFERT:
+        if data.entrepot_source_id:
+            await appeler_warehouse_update_capacite(
+                data.entrepot_source_id, -data.quantite, token, data.source_type
+            )
+        if data.entrepot_dest_id:
+            await appeler_warehouse_update_capacite(
+                data.entrepot_dest_id, data.quantite, token, data.destination_type
+            )
 
     # Mise à jour automatique de ChromaDB (ne bloque pas la réponse)
     await indexer_mouvement_dans_rag(
@@ -644,14 +736,15 @@ async def creer_mouvement(
     Retourne la liste paginée des mouvements avec filtres optionnels :
     - **type_mouvement** : entree / sortie / transfert
     - **produit_id**     : filtre par produit
-    - **entrepot_id**    : filtre par entrepôt source OU destination
+    - **location_id**    : filtre par dépôt/magasin source OU destination
     - **statut**         : en_attente / valide / annule
     """
 )
 async def lister_mouvements(
     type_mouvement : Optional[str] = Query(None, description="entree / sortie / transfert"),
     produit_id     : Optional[int] = Query(None),
-    entrepot_id    : Optional[int] = Query(None, description="Entrepôt source OU destination"),
+    location_id    : Optional[int] = Query(None, description="ID dépôt ou magasin source OU destination"),
+    entrepot_id    : Optional[int] = Query(None, description="Alias legacy pour location_id"),
     statut         : Optional[str] = Query(None, description="en_attente / valide / annule"),
     db             : Session       = Depends(get_db),
     current_user   : dict          = Depends(get_current_user),
@@ -663,10 +756,11 @@ async def lister_mouvements(
         query = query.filter(Mouvement.type_mouvement == type_mouvement)
     if produit_id:
         query = query.filter(Mouvement.produit_id == produit_id)
-    if entrepot_id:
+    fid = location_id or entrepot_id
+    if fid:
         query = query.filter(
-            (Mouvement.entrepot_source_id == entrepot_id) |
-            (Mouvement.entrepot_dest_id   == entrepot_id)
+            (Mouvement.source_depot_id      == fid) | (Mouvement.source_magasin_id      == fid) |
+            (Mouvement.destination_depot_id == fid) | (Mouvement.destination_magasin_id == fid)
         )
     if statut:
         query = query.filter(Mouvement.statut == statut)
@@ -772,43 +866,56 @@ async def annuler_mouvement(
             detail="Ce mouvement est déjà annulé"
         )
 
+    # ── Résoudre les IDs source/dest depuis les colonnes typées ──
+    src_id   = mouvement.source_depot_id      or mouvement.source_magasin_id
+    src_type = mouvement.source_type
+    dst_id   = mouvement.destination_depot_id or mouvement.destination_magasin_id
+    dst_type = mouvement.destination_type
+
+    if not src_id and not dst_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ce mouvement ne contient pas d'information de localisation — annulation impossible."
+        )
+
     # ── Inverser le stock selon le type de mouvement ──────────
     try:
         if mouvement.type_mouvement == TypeMouvement.ENTREE:
-            # ENTREE → on diminue le stock de l'entrepôt destination
             await appeler_stock_diminuer(
-                produit_id   = mouvement.produit_id,
-                entrepot_id  = mouvement.entrepot_dest_id,
-                quantite     = mouvement.quantite,
-                token        = token,
-                mouvement_ref= f"ANNULATION-{mouvement_id}"
+                produit_id    = mouvement.produit_id,
+                location_id   = dst_id,
+                quantite      = mouvement.quantite,
+                token         = token,
+                mouvement_ref = f"ANNULATION-{mouvement_id}",
+                location_type = dst_type,
             )
 
         elif mouvement.type_mouvement == TypeMouvement.SORTIE:
-            # SORTIE → on augmente le stock de l'entrepôt source
             await appeler_stock_augmenter(
-                produit_id   = mouvement.produit_id,
-                entrepot_id  = mouvement.entrepot_source_id,
-                quantite     = mouvement.quantite,
-                token        = token,
-                mouvement_ref= f"ANNULATION-{mouvement_id}"
+                produit_id    = mouvement.produit_id,
+                location_id   = src_id,
+                quantite      = mouvement.quantite,
+                token         = token,
+                mouvement_ref = f"ANNULATION-{mouvement_id}",
+                location_type = src_type,
             )
 
         elif mouvement.type_mouvement == TypeMouvement.TRANSFERT:
-            # TRANSFERT → on réaugmente la source et on rediminue la destination
             await appeler_stock_augmenter(
-                produit_id   = mouvement.produit_id,
-                entrepot_id  = mouvement.entrepot_source_id,
-                quantite     = mouvement.quantite,
-                token        = token,
-                mouvement_ref= f"ANNULATION-{mouvement_id}"
+                produit_id    = mouvement.produit_id,
+                location_id   = src_id,
+                quantite      = mouvement.quantite,
+                token         = token,
+                mouvement_ref = f"ANNULATION-{mouvement_id}",
+                location_type = src_type,
             )
             await appeler_stock_diminuer(
-                produit_id   = mouvement.produit_id,
-                entrepot_id  = mouvement.entrepot_dest_id,
-                quantite     = mouvement.quantite,
-                token        = token,
-                mouvement_ref= f"ANNULATION-{mouvement_id}"
+                produit_id    = mouvement.produit_id,
+                location_id   = dst_id,
+                quantite      = mouvement.quantite,
+                token         = token,
+                mouvement_ref = f"ANNULATION-{mouvement_id}",
+                location_type = dst_type,
             )
 
     except HTTPException as e:
@@ -816,6 +923,17 @@ async def annuler_mouvement(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Impossible d'annuler : correction du stock échouée — {e.detail}"
         )
+
+    # ── Inverser la capacite_utilisee dans Service-Warehouse (best-effort) ──
+    if mouvement.type_mouvement == TypeMouvement.ENTREE and dst_id:
+        await appeler_warehouse_update_capacite(dst_id, -mouvement.quantite, token, dst_type)
+    elif mouvement.type_mouvement == TypeMouvement.SORTIE and src_id:
+        await appeler_warehouse_update_capacite(src_id, mouvement.quantite, token, src_type)
+    elif mouvement.type_mouvement == TypeMouvement.TRANSFERT:
+        if src_id:
+            await appeler_warehouse_update_capacite(src_id,  mouvement.quantite, token, src_type)
+        if dst_id:
+            await appeler_warehouse_update_capacite(dst_id, -mouvement.quantite, token, dst_type)
 
     # ── Marquer le mouvement comme annulé ─────────────────────
     mouvement.statut = StatutMouvement.ANNULE

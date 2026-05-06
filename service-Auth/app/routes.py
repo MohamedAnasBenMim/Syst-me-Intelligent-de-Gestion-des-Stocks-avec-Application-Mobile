@@ -2,11 +2,11 @@
 # Tous les endpoints du Auth Service
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import or_
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials  # noqa: F401 — utilisé dans logout
 from sqlalchemy.orm import Session
 from typing import List
 import logging
-import httpx
 import aiosmtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -19,7 +19,7 @@ async def _envoyer_email_otp(destinataire: str, otp: str, prenom: str) -> None:
     message = MIMEMultipart("alternative")
     message["From"]    = settings.SMTP_USER
     message["To"]      = destinataire
-    message["Subject"] = "🔐 SGS SaaS — Votre code de réinitialisation"
+    message["Subject"] = "SGS SaaS — Votre code de réinitialisation"
 
     contenu_html = f"""
     <html>
@@ -72,12 +72,7 @@ async def _envoyer_email_otp(destinataire: str, otp: str, prenom: str) -> None:
         logger.error(f"[RESET PASSWORD] Échec envoi OTP à {destinataire} : {e}")
 
 from app.database import get_db
-from app.dependencies import (
-    get_current_user,
-    only_admin,
-    admin_or_manager,
-    all_roles,
-)
+from app.dependencies import get_current_user, only_admin
 from app.auth import (
     hash_password,
     verify_password,
@@ -85,10 +80,11 @@ from app.auth import (
     generate_otp,
     create_otp_session,
     verify_otp_session,
-    is_token_blacklisted,
 )
 from app import models, schemas
 from app.config import settings
+
+security = HTTPBearer()
 
 
 router = APIRouter()
@@ -111,19 +107,25 @@ async def login(
     """
     Connecter un utilisateur et retourner un token JWT.
     """
-    # Chercher l'utilisateur par email
+    # Chercher l'utilisateur par email (sans filtre est_actif pour distinguer les cas)
     utilisateur = db.query(models.Utilisateur).filter(
-        models.Utilisateur.email    == data.email.lower(),
-        models.Utilisateur.est_actif == True,
+        models.Utilisateur.email == data.email.lower(),
     ).first()
 
-    # Vérifier email + mot de passe
-    if not utilisateur or not verify_password(
-        data.password, utilisateur.password
-    ):
+    if not utilisateur:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Email ou mot de passe incorrect",
+            detail="Aucun compte trouvé avec cet email. Veuillez créer un compte.",
+        )
+    if not utilisateur.est_actif:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Votre compte a été désactivé. Contactez un administrateur.",
+        )
+    if not verify_password(data.password, utilisateur.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Mot de passe incorrect.",
         )
 
     # Créer le token JWT
@@ -150,27 +152,15 @@ async def login(
     summary="Déconnexion utilisateur",
 )
 async def logout(
-    db:   Session = Depends(get_db),
-    user: dict    = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db:          Session                      = Depends(get_db),
+    user:        dict                         = Depends(get_current_user),
 ):
-    """
-    Déconnecter un utilisateur en blacklistant son token.
-    """
-    from fastapi.security import OAuth2PasswordBearer
-    from fastapi import Request
-
-    # Blacklister le token
-    blacklist = models.TokenBlacklist(
-        token   = "token_révoqué",
-        user_id = user["user_id"],
-    )
+    token = credentials.credentials
+    blacklist = models.TokenBlacklist(token=token, user_id=user["user_id"])
     db.add(blacklist)
     db.commit()
-
-    return schemas.MessageResponse(
-        message="Déconnexion réussie",
-        success=True,
-    )
+    return schemas.MessageResponse(message="Déconnexion réussie", success=True)
 
 
 @router.get(
@@ -268,27 +258,33 @@ async def clerk_login(
 
     logger.info(f"[CLERK LOGIN] Tentative — clerk_id={data.clerk_user_id} email={email}")
 
-    # 2. Trouver ou créer l'utilisateur SGS (actif ou inactif)
+    # 2. Trouver ou créer l'utilisateur SGS — recherche par clerk_user_id OU email
     utilisateur = db.query(models.Utilisateur).filter(
-        models.Utilisateur.email == email,
+        or_(
+            models.Utilisateur.clerk_user_id == data.clerk_user_id,
+            models.Utilisateur.email == email,
+        )
     ).first()
 
     if not utilisateur:
         utilisateur = models.Utilisateur(
-            prenom   = prenom,
-            nom      = nom,
-            email    = email,
-            password = hash_password(f"google_{data.clerk_user_id}_{settings.JWT_SECRET_KEY[:8]}"),
-            role     = "operateur",
+            prenom        = prenom,
+            nom           = nom,
+            email         = email,
+            password      = hash_password(f"google_{data.clerk_user_id}_{settings.JWT_SECRET_KEY[:8]}"),
+            role          = "operateur",
+            clerk_user_id = data.clerk_user_id,
         )
         db.add(utilisateur)
         db.commit()
         db.refresh(utilisateur)
         logger.info(f"[CLERK LOGIN] Nouvel utilisateur Google créé : {email}")
     else:
-        # Réactiver si désactivé, mettre à jour les infos Google
+        # Réactiver si désactivé, stocker clerk_user_id si absent, mettre à jour les infos
         if not utilisateur.est_actif:
             utilisateur.est_actif = True
+        if not utilisateur.clerk_user_id:
+            utilisateur.clerk_user_id = data.clerk_user_id
         utilisateur.prenom = utilisateur.prenom or prenom
         utilisateur.nom    = utilisateur.nom    or nom
         db.commit()
@@ -415,20 +411,22 @@ async def create_utilisateur(
     """
     Créer un nouvel utilisateur. Réservé à Admin uniquement.
     """
+    email_normalise = data.email.lower().strip()
+
     # Vérifier unicité email
     existant = db.query(models.Utilisateur).filter(
-        models.Utilisateur.email == data.email
+        models.Utilisateur.email == email_normalise
     ).first()
     if existant:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Email '{data.email}' déjà utilisé",
+            detail=f"Email '{email_normalise}' déjà utilisé",
         )
 
     utilisateur = models.Utilisateur(
         nom      = data.nom,
         prenom   = data.prenom,
-        email    = data.email,
+        email    = email_normalise,
         password = hash_password(data.password),
         role     = data.role,
         salaire  = data.salaire,
@@ -450,11 +448,9 @@ async def list_utilisateurs(
     _user: dict    = Depends(only_admin),
 ):
     """
-    Lister tous les utilisateurs actifs. Réservé à Admin.
+    Lister tous les utilisateurs (actifs et désactivés). Réservé à Admin.
     """
-    return db.query(models.Utilisateur).filter(
-        models.Utilisateur.est_actif == True
-    ).all()
+    return db.query(models.Utilisateur).all()
 
 
 @router.get(
@@ -566,7 +562,10 @@ async def update_utilisateur(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Utilisateur {user_id} introuvable",
         )
-    for field, value in data.dict(exclude_unset=True).items():
+    updates = data.dict(exclude_unset=True)
+    if "email" in updates:
+        updates["email"] = updates["email"].lower().strip()
+    for field, value in updates.items():
         setattr(utilisateur, field, value)
     db.commit()
     db.refresh(utilisateur)
@@ -577,16 +576,55 @@ async def update_utilisateur(
     "/utilisateurs/{user_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     tags=["Utilisateurs"],
-    summary="Supprimer un utilisateur",
+    summary="Supprimer définitivement un utilisateur",
 )
 async def delete_utilisateur(
     user_id: int,
     db:      Session = Depends(get_db),
-    _user:   dict    = Depends(only_admin),
+    current: dict    = Depends(only_admin),
 ):
     """
-    Suppression logique d'un utilisateur. Réservé à Admin.
+    Suppression physique — la ligne est supprimée de la base.
+    L'email est libéré et peut être réutilisé pour un nouveau compte.
+    Un admin ne peut pas se supprimer lui-même.
     """
+    if current.get("user_id") == user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Vous ne pouvez pas supprimer votre propre compte",
+        )
+    utilisateur = db.query(models.Utilisateur).filter(
+        models.Utilisateur.id == user_id
+    ).first()
+    if not utilisateur:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Utilisateur {user_id} introuvable",
+        )
+    db.delete(utilisateur)
+    db.commit()
+
+
+@router.patch(
+    "/utilisateurs/{user_id}/desactiver",
+    response_model=schemas.MessageResponse,
+    tags=["Utilisateurs"],
+    summary="Désactiver un compte utilisateur",
+)
+async def desactiver_utilisateur(
+    user_id: int,
+    db:      Session = Depends(get_db),
+    current: dict    = Depends(only_admin),
+):
+    """
+    Désactivation logique — est_actif = False.
+    Le compte est suspendu mais l'email reste réservé.
+    """
+    if current.get("user_id") == user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Vous ne pouvez pas désactiver votre propre compte",
+        )
     utilisateur = db.query(models.Utilisateur).filter(
         models.Utilisateur.id == user_id
     ).first()
@@ -597,6 +635,35 @@ async def delete_utilisateur(
         )
     utilisateur.est_actif = False
     db.commit()
+    return schemas.MessageResponse(message=f"Compte de {utilisateur.prenom} {utilisateur.nom} désactivé.", success=True)
+
+
+@router.patch(
+    "/utilisateurs/{user_id}/reactiver",
+    response_model=schemas.MessageResponse,
+    tags=["Utilisateurs"],
+    summary="Réactiver un compte utilisateur désactivé",
+)
+async def reactiver_utilisateur(
+    user_id: int,
+    db:      Session = Depends(get_db),
+    _user:   dict    = Depends(only_admin),
+):
+    """
+    Réactivation logique — est_actif = True.
+    Permet à l'admin de réactiver un compte suspendu.
+    """
+    utilisateur = db.query(models.Utilisateur).filter(
+        models.Utilisateur.id == user_id
+    ).first()
+    if not utilisateur:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Utilisateur {user_id} introuvable",
+        )
+    utilisateur.est_actif = True
+    db.commit()
+    return schemas.MessageResponse(message=f"Compte de {utilisateur.prenom} {utilisateur.nom} réactivé.", success=True)
 
 
 @router.put(

@@ -23,6 +23,7 @@ class Utilisateur(Base):
     role       = Column(String(50),  nullable=False, default="operateur")
     # admin | gestionnaire | operateur
     salaire    = Column(Float, nullable=True)    # DT/mois — renseigné par l'admin
+    clerk_user_id = Column(String(200), unique=True, nullable=True, index=True)
     est_actif  = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

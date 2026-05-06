@@ -8,7 +8,7 @@ import {
 import DashboardLayout from '../../components/DashboardLayout'
 import { useAuth } from '../../context/AuthContext'
 import {
-  getDashboard, getAlertes, getMouvements, getEntrepots, getUtilisateurs, getPrevisionsML,
+  getDashboard, getAlertes, getMouvements, getDepots, getStocks, getUtilisateurs, getPrevisionsML,
   getHistoriquePL,
 } from '../../services/api'
 import './Dashboard.css'
@@ -168,7 +168,7 @@ function EntrepotOccupation({ entrepots }) {
                 <span>{e.nom}</span>
               </div>
               {nonConfiguree
-                ? <span className="occ-row-pct" style={{ color: '#F59E0B', fontSize: 11 }}>⚠ Non configuré</span>
+                ? <span className="occ-row-pct" style={{ color: '#F59E0B', fontSize: 11 }}>Non configuré</span>
                 : <span className="occ-row-pct" style={{ color: barColor }}>{taux}%</span>
               }
             </div>
@@ -188,11 +188,11 @@ function EntrepotOccupation({ entrepots }) {
             </div>
             {nonConfiguree && (
               <div className="occ-warning" style={{ color: '#F59E0B' }}>
-                ⚠️ Définir la capacité dans Entrepôts → Modifier
+                Définir la capacité dans Entrepôts → Modifier
               </div>
             )}
             {!nonConfiguree && taux >= 85 && (
-              <div className="occ-warning">⚠️ Capacité critique</div>
+              <div className="occ-warning">Capacité critique</div>
             )}
           </div>
         )
@@ -536,8 +536,9 @@ export default function Dashboard() {
     Promise.allSettled([
       getAlertes({ statut: 'ACTIVE', per_page: 6 }),
       getMouvements({ per_page: 500 }),
-      getEntrepots(),
-    ]).then(([a, m, e]) => {
+      getDepots(),
+      getStocks(),
+    ]).then(([a, m, e, s]) => {
       if (a.status === 'fulfilled') {
         const list = a.value?.alertes || []
         setAlertes(list)
@@ -545,7 +546,18 @@ export default function Dashboard() {
         if (crit) setAlertPopup(crit)
       }
       if (m.status === 'fulfilled') setMouvs(m.value?.mouvements || [])
-      if (e.status === 'fulfilled') setEntrepots(Array.isArray(e.value) ? e.value : e.value?.entrepots || [])
+      if (e.status === 'fulfilled') {
+        const depots = e.value?.depots || []
+        const stocks = s.status === 'fulfilled' ? (Array.isArray(s.value) ? s.value : []) : []
+        // Calcule capacite_utilisee réelle depuis les stocks
+        const depotsAvecStock = depots.map(d => {
+          const qte = stocks
+            .filter(st => st.depot_id === d.id || st.entrepot_id === d.id)
+            .reduce((sum, st) => sum + (st.quantite || 0), 0)
+          return { ...d, capacite_utilisee: qte }
+        })
+        setEntrepots(depotsAvecStock)
+      }
       clearTimeout(safetyTimer)
       setLoading(false)
     })
@@ -602,9 +614,9 @@ export default function Dashboard() {
             {/* ── KPI ── */}
             <div className="kpi-grid">
               <KpiCard
-                icon={Warehouse} label="Entrepôts actifs"
-                value={fmt(kpi?.total_entrepots)}
-                sub="+2 ce mois"
+                icon={Warehouse} label="Dépôts actifs"
+                value={fmt(entrepots.filter(e => e.est_actif !== false).length || kpi?.total_entrepots)}
+                sub={`${entrepots.length} dépôt${entrepots.length !== 1 ? 's' : ''} enregistré${entrepots.length !== 1 ? 's' : ''}`}
                 color="#6366F1"
                 subColor="#22C55E"
               />
@@ -931,7 +943,7 @@ export default function Dashboard() {
                       <>
                         <div className="value-sub">
                           {nonConfig
-                            ? <span style={{ color: '#F59E0B' }}>⚠ Certains entrepôts ont une capacité non configurée</span>
+                            ? <span style={{ color: '#F59E0B' }}>Certains entrepôts ont une capacité non configurée</span>
                             : `Taux d'occupation moyen : ${tauxAffiche}%`
                           }
                         </div>
@@ -961,11 +973,9 @@ export default function Dashboard() {
                         <div className="value-sub">
                           Stock : {fmtCurrency(lastPL.valeur_stock)} · Charges : {fmtCurrency(lastPL.total_depenses)}
                         </div>
-                        {lastPL.total_depenses > 0 && (
+                        {lastPL.chiffre_affaires > 0 && lastPL.marge_brute != null && (
                           <div className="value-sub">
-                            Marge : {(lastPL.profit + lastPL.total_depenses) > 0
-                              ? ((lastPL.profit / (lastPL.profit + lastPL.total_depenses)) * 100).toFixed(1)
-                              : '0.0'}%
+                            Marge brute : {((lastPL.marge_brute / lastPL.chiffre_affaires) * 100).toFixed(1)}%
                           </div>
                         )}
                       </>

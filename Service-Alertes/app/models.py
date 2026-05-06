@@ -38,8 +38,8 @@ class Alerte(Base):
     produit_id       = Column(Integer, nullable=False, index=True)
     produit_nom      = Column(String(200), nullable=True)   # dénormalisé
 
-    # Entrepôt concerné (référence vers Service Warehouse — pas de ForeignKey)
-    entrepot_id      = Column(Integer, nullable=False, index=True)
+    # Localisation concernée — depot_id ou magasin_id selon location_type (pas de FK cross-service)
+    entrepot_id      = Column(Integer, nullable=True, index=True)   # dénorm. = depot_id ou magasin_id
     entrepot_nom     = Column(String(200), nullable=True)   # dénormalisé
 
     # Quantités au moment de l'alerte

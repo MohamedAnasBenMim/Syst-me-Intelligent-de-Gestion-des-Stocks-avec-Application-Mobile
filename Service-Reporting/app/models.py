@@ -90,6 +90,7 @@ class CalculProfitPerte(Base):
     total_depenses    = Column(Float, nullable=False)
     valeur_stock      = Column(Float, nullable=False)
     chiffre_affaires  = Column(Float, nullable=True, default=0.0)  # CA réel depuis sorties
+    marge_brute       = Column(Float, nullable=True, default=0.0)  # CA - coût d'achat (COGS)
     profit            = Column(Float, nullable=False)   # peut être négatif
     statut            = Column(String(20), nullable=False)  # benefice / perte / equilibre
 
@@ -99,4 +100,4 @@ class CalculProfitPerte(Base):
     # Qui a fait le calcul
     calcule_par_id    = Column(Integer, nullable=True)
     calcule_par_nom   = Column(String(200), nullable=True)
-    calcule_le        = Column(DateTime(timezone=True), server_default=func.now())
+    String        = Column(DateTime(timezone=True), server_default=func.now())

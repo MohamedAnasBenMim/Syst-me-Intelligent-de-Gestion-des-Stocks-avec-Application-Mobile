@@ -68,6 +68,15 @@ logger   = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════
+# CACHE EN MÉMOIRE (TTL 30 min)
+# ═══════════════════════════════════════════════════════
+
+_CACHE_TTL = 1800  # secondes
+
+_cache_fournisseurs: dict = {"data": None, "ts": 0.0}
+
+
+# ═══════════════════════════════════════════════════════
 # INITIALISATION DES COMPOSANTS RAG
 # ═══════════════════════════════════════════════════════
 
@@ -338,13 +347,29 @@ def appeler_llm(prompt: str, force_json: bool = False) -> str:
 
 def construire_prompt(produit_id, produit_nom, entrepot_nom,
                        stock_actuel, seuil_min, contexte_rag,
-                       contexte_supplementaire: str = None) -> str:
+                       contexte_supplementaire: str = None,
+                       fournisseurs: list = None) -> str:
     contexte_str = "\n".join([f"- {r['document']}" for r in contexte_rag[:5]]) \
                    if contexte_rag else "Aucun historique disponible."
     section_contexte = (
         f"\nCONTEXTE SUPPLÉMENTAIRE FOURNI PAR L'UTILISATEUR:\n{contexte_supplementaire}\n"
         if contexte_supplementaire else ""
     )
+    section_fournisseurs = ""
+    if fournisseurs:
+        f_lines = "\n".join([
+            f"  - {f['nom']}: délai={f.get('delai_livraison_jours', '?')}j, "
+            f"note={f.get('note', '?')}/5, "
+            f"produits={f.get('nb_produits', 0)}, "
+            f"fiabilite={'Fiable' if (f.get('note') or 0) >= 4 else 'Moyen' if (f.get('note') or 0) >= 3 else 'Faible'}"
+            for f in fournisseurs[:5]
+        ])
+        section_fournisseurs = f"\nFOURNISSEURS DISPONIBLES (évaluer lequel privilégier):\n{f_lines}\n"
+
+    etat = ("RUPTURE - Stock à zéro !" if stock_actuel == 0
+            else "CRITIQUE - Stock sous le seuil minimum!" if stock_actuel < seuil_min
+            else "Stock faible - surveiller")
+
     return f"""Tu es un assistant expert en gestion de stock pour une entreprise tunisienne.
 
 SITUATION ACTUELLE:
@@ -352,20 +377,23 @@ SITUATION ACTUELLE:
 - Entrepôt: {entrepot_nom}
 - Stock actuel: {stock_actuel} unités
 - Seuil minimum: {seuil_min} unités
-- État: {"CRITIQUE - Stock sous le seuil minimum!" if stock_actuel < seuil_min else "Stock faible"}
-{section_contexte}
+- État: {etat}
+{section_contexte}{section_fournisseurs}
 HISTORIQUE DES MOUVEMENTS (contexte RAG):
 {contexte_str}
 
-TÂCHE: Génère une recommandation de réapprovisionnement.
+TÂCHE: Génère une recommandation de réapprovisionnement complète incluant:
+1. La quantité à commander (basée sur l'historique de consommation)
+2. L'analyse et le choix du meilleur fournisseur (si liste disponible) avec explication claire (bon/mauvais fournisseur et pourquoi)
+3. Un niveau d'urgence justifié
 
 RÉPONDS AU FORMAT JSON UNIQUEMENT:
 {{
-    "titre": "Titre court",
-    "contenu": "Explication détaillée",
+    "titre": "Titre court et précis",
+    "contenu": "Explication détaillée incluant l'analyse du fournisseur recommandé et pourquoi",
     "quantite_suggeree": nombre,
     "urgence": "critique|haute|moyenne|basse",
-    "fournisseur_suggere": null,
+    "fournisseur_suggere": "Nom du fournisseur recommandé ou null si aucun",
     "confiance": 0.0 à 1.0
 }}"""
 
@@ -499,27 +527,52 @@ async def route_generer_recommandation(
     # Auto-vectorisation si ChromaDB est vide
     await auto_vectoriser_si_vide(token)
 
-    stock_info   = await recuperer_stock(token, request.produit_id, request.entrepot_id)
-    stock_actuel = request.stock_actuel or stock_info.get("quantite", 0)
-    seuil_min    = request.seuil_min    or stock_info.get("produit", {}).get("seuil_alerte_min", 10)
-    produit_nom  = stock_info.get("produit", {}).get("designation", f"Produit {request.produit_id}")
-    entrepot_nom = stock_info.get("entrepot", {}).get("nom", f"Entrepôt {request.entrepot_id}")
+    produit_id  = request.produit_id  or 0
+    entrepot_id = request.entrepot_id or 0
+
+    # Récupérer infos stock si produit/entrepôt connus
+    if produit_id and entrepot_id:
+        stock_info   = await recuperer_stock(token, produit_id, entrepot_id)
+        stock_actuel = request.stock_actuel or stock_info.get("quantite", 0)
+        seuil_min    = request.seuil_min    or stock_info.get("produit", {}).get("seuil_alerte_min", 10)
+        produit_nom  = stock_info.get("produit", {}).get("designation", f"Produit {produit_id}")
+        entrepot_nom = stock_info.get("entrepot", {}).get("nom", f"Entrepôt {entrepot_id}")
+    else:
+        # Demande manuelle libre (modal) — pas de produit/entrepôt spécifique
+        stock_actuel = request.stock_actuel or 0
+        seuil_min    = request.seuil_min    or 10
+        produit_nom  = "produit"
+        entrepot_nom = "entrepôt"
+
+    # Récupérer liste fournisseurs pour enrichir le prompt
+    fournisseurs_list = []
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r_f = await client.get(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/fournisseurs",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"limit": 10},
+            )
+        if r_f.status_code == 200:
+            fournisseurs_list = r_f.json().get("fournisseurs", [])
+    except Exception:
+        pass
 
     # RAG : recherche sémantique dans ChromaDB
-    query       = f"historique mouvements produit {produit_nom} entrepôt {entrepot_nom}"
-    contexte_rag = recherche_semantique(query, settings.RAG_TOP_K,
-                                        request.produit_id, request.entrepot_id)
+    query        = f"historique mouvements produit {produit_nom} entrepôt {entrepot_nom}"
+    contexte_rag = recherche_semantique(query, settings.RAG_TOP_K, produit_id, entrepot_id)
 
     # LLM : génération de la recommandation
-    prompt       = construire_prompt(request.produit_id, produit_nom, entrepot_nom,
+    prompt       = construire_prompt(produit_id, produit_nom, entrepot_nom,
                                      stock_actuel, seuil_min, contexte_rag,
-                                     request.contexte_supplementaire)
+                                     request.contexte_supplementaire,
+                                     fournisseurs_list or None)
     llm_response = appeler_llm(prompt, force_json=True)
     result       = parser_reponse_llm(llm_response or "", produit_nom, stock_actuel, seuil_min)
 
     # Sauvegarde PostgreSQL
     recommandation = Recommandation(
-        produit_id=request.produit_id, entrepot_id=request.entrepot_id,
+        produit_id=produit_id, entrepot_id=entrepot_id,
         alerte_id=request.alerte_id,
         type=TypeRecommandation.REAPPROVISIONNEMENT,
         titre=result["titre"], contenu=result["contenu"],
@@ -1093,10 +1146,15 @@ async def route_previsions(
                     elif moy2 < moy1 * 0.9:
                         tendance = "baisse"
             else:
-                # Aucune sortie → stock stable, pas de consommation mesurable
+                # Aucune sortie — détecter quand même si le stock est en rupture
                 conso_par_jour = 0.0
-                jours          = 9999.0
                 tendance       = "stable"
+                if quantite <= 0:
+                    jours = 0.0         # rupture même sans historique de sorties
+                elif quantite <= seuil_min:
+                    jours = 0.0         # sous le seuil minimum
+                else:
+                    jours = 9999.0      # vraiment stable, pas de consommation mesurable
 
             # Quantité à commander = 30 jours de conso (ou seuil_min si pas de conso)
             qte_commander = round(
@@ -1104,8 +1162,14 @@ async def route_previsions(
                 0
             )
 
-            # Urgence
-            if conso_par_jour == 0:
+            # Urgence — vérifier d'abord le niveau de stock réel avant la consommation
+            if conso_par_jour == 0 and quantite <= 0:
+                urgence = "critique"
+                recommandation = f"RUPTURE ! Stock à 0 unité (seuil min : {seuil_min:.0f}). Commander {int(qte_commander)} unités immédiatement."
+            elif conso_par_jour == 0 and quantite <= seuil_min:
+                urgence = "haute"
+                recommandation = f"Stock sous le seuil minimum ({quantite:.0f} ≤ {seuil_min:.0f}). Commander {int(qte_commander)} unités."
+            elif conso_par_jour == 0:
                 urgence = "stable"
                 recommandation = "Aucune sortie enregistrée — stock stable. Surveiller les entrées futures."
             elif jours <= 0:
@@ -1170,3 +1234,441 @@ async def route_stats(current_user: dict = Depends(get_current_gestionnaire_or_a
         "ollama_fallback":     settings.LLM_MODEL,
         "rag_top_k":           settings.RAG_TOP_K,
     }
+
+
+# ═══════════════════════════════════════════════════════
+# NOUVELLES COLLECTIONS CHROMADB
+# ═══════════════════════════════════════════════════════
+
+_chroma_collection_fournisseurs = None
+_chroma_collection_marches      = None
+
+def get_chroma_fournisseurs():
+    global _chroma_collection_fournisseurs
+    if _chroma_collection_fournisseurs is None:
+        client = chromadb.PersistentClient(
+            path=settings.CHROMA_PERSIST_DIR,
+            settings=chromadb.Settings(anonymized_telemetry=False),
+        )
+        _chroma_collection_fournisseurs = client.get_or_create_collection(
+            name="fournisseurs_performance",
+            metadata={"hnsw:space": "cosine"}
+        )
+    return _chroma_collection_fournisseurs
+
+
+def get_chroma_marches():
+    global _chroma_collection_marches
+    if _chroma_collection_marches is None:
+        client = chromadb.PersistentClient(
+            path=settings.CHROMA_PERSIST_DIR,
+            settings=chromadb.Settings(anonymized_telemetry=False),
+        )
+        _chroma_collection_marches = client.get_or_create_collection(
+            name="marches_produits",
+            metadata={"hnsw:space": "cosine"}
+        )
+    return _chroma_collection_marches
+
+
+# ═══════════════════════════════════════════════════════
+# FONCTIONS DE TRANSFORMATION TEXTE
+# ═══════════════════════════════════════════════════════
+
+def fournisseur_to_text(f: dict) -> str:
+    """Transforme un fournisseur en texte descriptif pour l'embedding."""
+    nom     = f.get("nom", "Fournisseur inconnu")
+    delai   = f.get("delai_livraison_jours")
+    note    = f.get("note")
+    nb_prod = f.get("nb_produits", 0)
+    cond    = f.get("conditions_paiement", "")
+
+    texte = f"Fournisseur: {nom}."
+    if delai is not None:
+        texte += f" Délai de livraison moyen: {delai} jours."
+    if note is not None:
+        texte += f" Note de performance: {note}/5."
+    if nb_prod:
+        texte += f" Fournit {nb_prod} produits différents."
+    if cond:
+        texte += f" Conditions de paiement: {cond}."
+    return texte
+
+
+def produit_marche_to_text(p: dict) -> str:
+    """Transforme un produit avec classification en texte descriptif pour l'embedding."""
+    nom           = p.get("designation", "Produit inconnu")
+    type_produit  = p.get("type_produit", "CONSOMMABLE")
+    pattern       = p.get("pattern_vente", "REGULIER")
+    prix_achat    = p.get("prix_achat")
+    prix_vente    = p.get("prix_vente")
+    marge         = p.get("marge_calculee")
+    mois_debut    = p.get("mois_debut_vente")
+    mois_fin      = p.get("mois_fin_vente")
+    jours_vendre  = p.get("jours_pour_vendre")
+    meilleur_mom  = p.get("meilleur_moment_achat", "")
+
+    MOIS = ["", "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+            "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
+
+    texte = f"Produit: {nom}. Type: {type_produit}. Pattern de vente: {pattern}."
+    if prix_achat and prix_vente:
+        texte += f" Prix d'achat: {prix_achat} TND, prix de vente: {prix_vente} TND."
+    if marge is not None:
+        texte += f" Marge bénéficiaire: {marge:.1f}%."
+    if pattern in ("SAISONNIER", "OCCASIONNEL"):
+        if mois_debut and mois_fin:
+            texte += f" Période de vente: {MOIS[mois_debut]} à {MOIS[mois_fin]}."
+        if jours_vendre:
+            texte += f" Durée moyenne de vente: {jours_vendre} jours."
+        if meilleur_mom:
+            texte += f" Meilleur moment d'achat: {meilleur_mom}."
+    return texte
+
+
+# ═══════════════════════════════════════════════════════
+# ROUTE — VECTORISER FOURNISSEURS
+# ═══════════════════════════════════════════════════════
+
+@router.post(
+    "/ia/embedding/vectoriser-fournisseurs",
+    tags=["IA - Fournisseurs"],
+    summary="Vectoriser les fournisseurs dans ChromaDB",
+)
+async def vectoriser_fournisseurs(
+    credentials:  HTTPAuthorizationCredentials = Depends(security),
+    current_user: dict                         = Depends(get_current_gestionnaire_or_admin),
+):
+    token = credentials.credentials
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/fournisseurs",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"limit": 500},
+            )
+        fournisseurs = r.json().get("fournisseurs", []) if r.status_code == 200 else []
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Erreur récupération fournisseurs: {e}")
+
+    if not fournisseurs:
+        return {"vectorises": 0, "message": "Aucun fournisseur trouvé"}
+
+    model      = get_embedding_model()
+    collection = get_chroma_fournisseurs()
+    textes     = [fournisseur_to_text(f) for f in fournisseurs]
+    embeddings = model.encode(textes, show_progress_bar=False).tolist()
+
+    ids        = [f"fournisseur_{f['id']}" for f in fournisseurs]
+    metadatas  = [{"fournisseur_id": f["id"], "nom": f["nom"]} for f in fournisseurs]
+
+    collection.upsert(ids=ids, documents=textes, embeddings=embeddings, metadatas=metadatas)
+    return {"vectorises": len(fournisseurs), "message": f"{len(fournisseurs)} fournisseurs vectorisés"}
+
+
+# ═══════════════════════════════════════════════════════
+# ROUTE — VECTORISER PRODUITS MARCHÉ
+# ═══════════════════════════════════════════════════════
+
+@router.post(
+    "/ia/embedding/vectoriser-marches",
+    tags=["IA - Marché"],
+    summary="Vectoriser les produits avec classification dans ChromaDB",
+)
+async def vectoriser_marches(
+    credentials:  HTTPAuthorizationCredentials = Depends(security),
+    current_user: dict                         = Depends(get_current_gestionnaire_or_admin),
+):
+    token = credentials.credentials
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/produits",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"limit": 500},
+            )
+        produits = r.json() if r.status_code == 200 else []
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Erreur récupération produits: {e}")
+
+    if not produits:
+        return {"vectorises": 0, "message": "Aucun produit trouvé"}
+
+    model      = get_embedding_model()
+    collection = get_chroma_marches()
+    textes     = [produit_marche_to_text(p) for p in produits]
+    embeddings = model.encode(textes, show_progress_bar=False).tolist()
+
+    ids        = [f"produit_{p['id']}" for p in produits]
+    metadatas  = [{"produit_id": p["id"], "type_produit": p.get("type_produit", ""),
+                   "pattern_vente": p.get("pattern_vente", "")} for p in produits]
+
+    collection.upsert(ids=ids, documents=textes, embeddings=embeddings, metadatas=metadatas)
+    return {"vectorises": len(produits), "message": f"{len(produits)} produits vectorisés"}
+
+
+# ═══════════════════════════════════════════════════════
+# ROUTE — ANALYSER MARGE D'UN PRODUIT
+# ═══════════════════════════════════════════════════════
+
+@router.post(
+    "/ia/marges/analyser",
+    tags=["IA - Marché"],
+    summary="Analyse IA de la marge d'un produit avec suggestions d'optimisation",
+)
+async def analyser_marge(
+    produit_id:   int                          = Query(..., gt=0),
+    credentials:  HTTPAuthorizationCredentials = Depends(security),
+    current_user: dict                         = Depends(get_current_user),
+):
+    token = credentials.credentials
+
+    # Récupérer le produit
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/produits/{produit_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        if r.status_code != 200:
+            raise HTTPException(status_code=404, detail=f"Produit {produit_id} introuvable")
+        produit = r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    # Recherche sémantique dans ChromaDB marché
+    texte_requete = produit_marche_to_text(produit)
+    model         = get_embedding_model()
+    embedding     = model.encode([texte_requete]).tolist()
+
+    try:
+        resultats = get_chroma_marches().query(
+            query_embeddings=embedding,
+            n_results=min(5, get_chroma_marches().count() or 1),
+        )
+        contexte_rag = "\n".join(resultats["documents"][0]) if resultats["documents"] else ""
+    except Exception:
+        contexte_rag = ""
+
+    marge = produit.get("marge_calculee")
+    type_p = produit.get("type_produit", "CONSOMMABLE")
+    plages = {"CONSOMMABLE": "5%-25%", "NON_CONSOMMABLE": "25%-80%"}
+
+    prompt = f"""Tu es un expert en gestion des marges commerciales en Tunisie.
+
+Produit analysé: {produit.get('designation')}
+Type: {type_p}
+Prix d'achat: {produit.get('prix_achat')} TND
+Prix de vente: {produit.get('prix_vente')} TND
+Marge actuelle: {marge}%
+Plage recommandée pour {type_p}: {plages.get(type_p, 'inconnue')}
+Pattern de vente: {produit.get('pattern_vente', 'REGULIER')}
+
+Contexte marché (produits similaires):
+{contexte_rag}
+
+Réponds en JSON strict:
+{{
+  "analyse": "diagnostic en 2 phrases",
+  "marge_optimale": <nombre>,
+  "prix_vente_suggere": <nombre>,
+  "actions": ["action 1", "action 2"],
+  "avertissement": "si marge hors plage, sinon null"
+}}"""
+
+    try:
+        reponse_llm = appeler_llm(prompt, force_json=True)
+        r = (reponse_llm or "").strip()
+        for prefix in ["```json", "```"]:
+            if r.startswith(prefix): r = r[len(prefix):]
+        if r.endswith("```"): r = r[:-3]
+        analyse = json.loads(r)
+    except Exception:
+        analyse = {
+            "analyse":            f"Marge actuelle: {marge}%",
+            "marge_optimale":     marge,
+            "prix_vente_suggere": produit.get("prix_vente"),
+            "actions":            ["Vérifier les prix fournisseurs"],
+            "avertissement":      produit.get("avertissement_marge"),
+        }
+
+    return {"produit_id": produit_id, "designation": produit.get("designation"), **analyse}
+
+
+# ═══════════════════════════════════════════════════════
+# ROUTE — TIMING MARCHÉ (quand acheter/vendre)
+# ═══════════════════════════════════════════════════════
+
+@router.post(
+    "/ia/marche/timing",
+    tags=["IA - Marché"],
+    summary="Recommandation IA sur le meilleur moment d'achat/vente d'un produit",
+)
+async def timing_marche(
+    produit_id:   int                          = Query(..., gt=0),
+    credentials:  HTTPAuthorizationCredentials = Depends(security),
+    current_user: dict                         = Depends(get_current_user),
+):
+    token = credentials.credentials
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/produits/{produit_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        if r.status_code != 200:
+            raise HTTPException(status_code=404, detail=f"Produit {produit_id} introuvable")
+        produit = r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    MOIS = ["", "Janvier", "Février", "Mars", "Avril", "Mai", "Juin",
+            "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"]
+
+    mois_debut = produit.get("mois_debut_vente")
+    mois_fin   = produit.get("mois_fin_vente")
+    jours      = produit.get("jours_pour_vendre")
+    pattern    = produit.get("pattern_vente", "REGULIER")
+    delai_info = f"{jours} jours" if jours else "délai inconnu"
+
+    periode = ""
+    if mois_debut and mois_fin:
+        periode = f"de {MOIS[mois_debut]} à {MOIS[mois_fin]}"
+
+    periode_str = periode or "toute l'année"
+    prompt = f"""Tu es un expert en approvisionnement et gestion des stocks en Tunisie.
+
+Produit: {produit.get('designation')}
+Pattern de vente: {pattern}
+Période de vente: {periode_str}
+Durée moyenne de vente: {delai_info}
+Meilleur moment d'achat connu: {produit.get('meilleur_moment_achat', 'non défini')}
+Mois actuel: {datetime.now().month} ({MOIS[datetime.now().month]})
+
+Réponds en JSON strict:
+{{
+  "recommandation": "conseil principal en 2 phrases",
+  "meilleur_mois_achat": "nom du mois",
+  "meilleur_mois_vente": "nom du mois",
+  "delai_livraison_conseille": "X semaines avant la saison",
+  "risques": ["risque 1", "risque 2"],
+  "opportunites": ["opportunité 1"]
+}}"""
+
+    try:
+        reponse_llm = appeler_llm(prompt, force_json=True)
+        r = (reponse_llm or "").strip()
+        for prefix in ["```json", "```"]:
+            if r.startswith(prefix): r = r[len(prefix):]
+        if r.endswith("```"): r = r[:-3]
+        timing = json.loads(r)
+    except Exception:
+        timing = {
+            "recommandation":             f"Produit {pattern} — consultez les données historiques",
+            "meilleur_mois_achat":        MOIS[mois_debut] if mois_debut else "Non défini",
+            "meilleur_mois_vente":        MOIS[mois_debut] if mois_debut else "Non défini",
+            "delai_livraison_conseille":  "4-6 semaines avant la saison",
+            "risques":                    ["Rupture de stock si achat trop tardif"],
+            "opportunites":               ["Négocier des prix bas hors saison"],
+        }
+
+    return {"produit_id": produit_id, "designation": produit.get("designation"), **timing}
+
+
+# ═══════════════════════════════════════════════════════
+# ROUTE — PERFORMANCE FOURNISSEURS
+# ═══════════════════════════════════════════════════════
+
+@router.get(
+    "/ia/fournisseurs/performance",
+    tags=["IA - Fournisseurs"],
+    summary="Analyse IA des performances des fournisseurs",
+)
+async def performance_fournisseurs(
+    credentials:  HTTPAuthorizationCredentials = Depends(security),
+    current_user: dict                         = Depends(get_current_user),
+    force_refresh: bool = Query(False, description="Forcer le recalcul même si le cache est valide"),
+):
+    global _cache_fournisseurs
+    if not force_refresh and _cache_fournisseurs["data"] and (time.time() - _cache_fournisseurs["ts"]) < _CACHE_TTL:
+        logger.info("Analyse fournisseurs retournée depuis le cache")
+        return _cache_fournisseurs["data"]
+
+    token = credentials.credentials
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/fournisseurs",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"limit": 50},
+            )
+        fournisseurs = r.json().get("fournisseurs", []) if r.status_code == 200 else []
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    if not fournisseurs:
+        return {"message": "Aucun fournisseur disponible", "classement": []}
+
+    # Contexte RAG
+    requete   = "fournisseur performance livraison délai fiabilité qualité"
+    model     = get_embedding_model()
+    embedding = model.encode([requete]).tolist()
+
+    try:
+        col = get_chroma_fournisseurs()
+        if col.count() > 0:
+            resultats   = col.query(query_embeddings=embedding, n_results=min(10, col.count()))
+            contexte_rag = "\n".join(resultats["documents"][0])
+        else:
+            contexte_rag = "\n".join([fournisseur_to_text(f) for f in fournisseurs[:10]])
+    except Exception:
+        contexte_rag = "\n".join([fournisseur_to_text(f) for f in fournisseurs[:10]])
+
+    liste_txt = "\n".join([
+        f"- {f['nom']}: délai={f.get('delai_livraison_jours', '?')}j, note={f.get('note', '?')}/5, produits={f.get('nb_produits', 0)}"
+        for f in fournisseurs
+    ])
+
+    prompt = f"""Tu es un expert en gestion des fournisseurs en Tunisie.
+
+Liste des fournisseurs:
+{liste_txt}
+
+Contexte historique:
+{contexte_rag}
+
+Analyse la performance de chaque fournisseur et réponds en JSON strict:
+{{
+  "synthese": "résumé en 2 phrases",
+  "classement": [
+    {{"rang": 1, "nom": "...", "score": 8.5, "points_forts": ["..."], "points_faibles": ["..."]}}
+  ],
+  "recommandation_globale": "conseil stratégique"
+}}"""
+
+    try:
+        reponse_llm = appeler_llm(prompt, force_json=True)
+        r = (reponse_llm or "").strip()
+        for prefix in ["```json", "```"]:
+            if r.startswith(prefix): r = r[len(prefix):]
+        if r.endswith("```"): r = r[:-3]
+        analyse = json.loads(r)
+    except Exception:
+        analyse = {
+            "synthese": f"{len(fournisseurs)} fournisseurs analysés",
+            "classement": [{"rang": i+1, "nom": f["nom"], "score": f.get("note", 0) or 0,
+                            "points_forts": [], "points_faibles": []}
+                           for i, f in enumerate(fournisseurs[:5])],
+            "recommandation_globale": "Comparer les délais de livraison et conditions de paiement",
+        }
+
+    result = {"nb_fournisseurs": len(fournisseurs), **analyse}
+    _cache_fournisseurs["data"] = result
+    _cache_fournisseurs["ts"]   = time.time()
+    return result

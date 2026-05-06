@@ -160,13 +160,31 @@ export async function getSalaires() {
   return handleResponse(res)
 }
 
-/** DELETE /utilisateurs/{id}  204 No Content  (admin) */
+/** DELETE /utilisateurs/{id} — suppression physique, libère l'email (admin) */
 export async function deleteUtilisateur(id) {
   const res = await fetch(`${AUTH_URL}/utilisateurs/${id}`, {
     method: 'DELETE',
     headers: bearerHeader(),
   })
   if (res.status === 204) return null
+  return handleResponse(res)
+}
+
+/** PATCH /utilisateurs/{id}/desactiver — désactivation logique, email conservé (admin) */
+export async function desactiverUtilisateur(id) {
+  const res = await fetch(`${AUTH_URL}/utilisateurs/${id}/desactiver`, {
+    method: 'PATCH',
+    headers: bearerHeader(),
+  })
+  return handleResponse(res)
+}
+
+/** PATCH /utilisateurs/{id}/reactiver — réactivation d'un compte suspendu (admin) */
+export async function reactiverUtilisateur(id) {
+  const res = await fetch(`${AUTH_URL}/utilisateurs/${id}/reactiver`, {
+    method: 'PATCH',
+    headers: bearerHeader(),
+  })
   return handleResponse(res)
 }
 
@@ -184,52 +202,6 @@ export async function changePassword(id, data) {
   return handleResponse(res)
 }
 
-// ════════════════════════════════════════════════════════════
-// WAREHOUSE — port 8002
-// Retourne EntrepotList { total, page, per_page, entrepots: [] }
-// ════════════════════════════════════════════════════════════
-
-/**
- * GET /entrepots → EntrepotList
- * @param {{ page?, per_page? }} params
- */
-export async function getEntrepots(params = {}) {
-  const res = await fetch(`${WAREHOUSE_URL}/entrepots${qs(params)}`, {
-    headers: bearerHeader(),
-  })
-  return handleResponse(res)
-}
-
-/** GET /entrepots/{id} → EntrepotResponse */
-export async function getEntrepot(id) {
-  const res = await fetch(`${WAREHOUSE_URL}/entrepots/${id}`, { headers: bearerHeader() })
-  return handleResponse(res)
-}
-
-/** POST /entrepots → EntrepotResponse  (admin/gestionnaire) */
-export async function createEntrepot(data) {
-  const res = await fetch(`${WAREHOUSE_URL}/entrepots`, {
-    method: 'POST', headers: authHeader(), body: JSON.stringify(data),
-  })
-  return handleResponse(res)
-}
-
-/** PUT /entrepots/{id} → EntrepotResponse  (admin/gestionnaire) */
-export async function updateEntrepot(id, data) {
-  const res = await fetch(`${WAREHOUSE_URL}/entrepots/${id}`, {
-    method: 'PUT', headers: authHeader(), body: JSON.stringify(data),
-  })
-  return handleResponse(res)
-}
-
-/** DELETE /entrepots/{id}  (admin) */
-export async function deleteEntrepot(id) {
-  const res = await fetch(`${WAREHOUSE_URL}/entrepots/${id}`, {
-    method: 'DELETE', headers: bearerHeader(),
-  })
-  if (res.status === 204) return null
-  return handleResponse(res)
-}
 
 // ════════════════════════════════════════════════════════════
 // STOCK — port 8003
@@ -320,6 +292,14 @@ export async function createMouvement(data) {
 export async function updateMouvement(id, data) {
   const res = await fetch(`${MOUVEMENT_URL}/mouvements/${id}`, {
     method: 'PUT', headers: authHeader(), body: JSON.stringify(data),
+  })
+  return handleResponse(res)
+}
+
+/** DELETE /mouvements/{id} → annule le mouvement et inverse les stocks */
+export async function annulerMouvement(id) {
+  const res = await fetch(`${MOUVEMENT_URL}/mouvements/${id}`, {
+    method: 'DELETE', headers: authHeader(),
   })
   return handleResponse(res)
 }
@@ -481,11 +461,11 @@ export async function getSalairesReporting() {
 // ════════════════════════════════════════════════════════════
 
 /** POST /ia/question → { reponse, sources, documents_utilises, temps_generation_ms } */
-export async function askQuestion(question, produit_id = null, entrepot_id = null) {
+export async function askQuestion(question, produit_id = null) {
   const res = await fetch(`${IA_URL}/ia/question`, {
     method: 'POST',
     headers: authHeader(),
-    body: JSON.stringify({ question, produit_id, entrepot_id, n_results: 5 }),
+    body: JSON.stringify({ question, produit_id, n_results: 5 }),
   })
   return handleResponse(res)
 }
@@ -585,13 +565,14 @@ export async function deletePromotion(id) {
 }
 
 /**
- * POST /promotions/appliquer-ia → PromotionResponse
+ * POST /promotions/appliquer-ia?produit_id=... → PromotionResponse
  * Applique la recommandation IA comme promotion officielle
- * @param {{ recommandation_ia_id, pourcentage_reduction, date_fin? }} data
+ * @param {{ produit_id, recommandation_ia_id, pourcentage_reduction, date_fin? }} data
  */
 export async function appliquerIAPromotion(data) {
-  const res = await fetch(`${STOCK_URL}/promotions/appliquer-ia`, {
-    method: 'POST', headers: authHeader(), body: JSON.stringify(data),
+  const { produit_id, ...body } = data
+  const res = await fetch(`${STOCK_URL}/promotions/appliquer-ia?produit_id=${produit_id}`, {
+    method: 'POST', headers: authHeader(), body: JSON.stringify(body),
   })
   return handleResponse(res)
 }
@@ -650,14 +631,6 @@ export async function delierProduitFournisseur(fournisseurId, produitId) {
   return handleResponse(res)
 }
 
-// ════════════════════════════════════════════════════════════
-// ENTREPÔTS ARBRE — port 8002
-// ════════════════════════════════════════════════════════════
-
-export async function getEntrepotsTree() {
-  const res = await fetch(`${WAREHOUSE_URL}/entrepots/tree`, { headers: bearerHeader() })
-  return handleResponse(res)
-}
 
 // ════════════════════════════════════════════════════════════
 // IA — NOUVELLES ROUTES (marge, timing, fournisseurs)
@@ -693,6 +666,81 @@ export async function timingMarche(produitId) {
 
 export async function performanceFournisseurs() {
   const res = await fetch(`${IA_URL}/ia/fournisseurs/performance`, { headers: bearerHeader() })
+  return handleResponse(res)
+}
+
+// ════════════════════════════════════════════════════════════
+// DÉPÔTS — port 8002
+// ════════════════════════════════════════════════════════════
+
+export async function getDepots(params = {}) {
+  const res = await fetch(`${WAREHOUSE_URL}/depots${qs(params)}`, { headers: bearerHeader() })
+  return handleResponse(res)
+}
+export async function getDepot(id) {
+  const res = await fetch(`${WAREHOUSE_URL}/depots/${id}`, { headers: bearerHeader() })
+  return handleResponse(res)
+}
+export async function createDepot(data) {
+  const res = await fetch(`${WAREHOUSE_URL}/depots`, { method: 'POST', headers: authHeader(), body: JSON.stringify(data) })
+  return handleResponse(res)
+}
+export async function updateDepot(id, data) {
+  const res = await fetch(`${WAREHOUSE_URL}/depots/${id}`, { method: 'PUT', headers: authHeader(), body: JSON.stringify(data) })
+  return handleResponse(res)
+}
+export async function deleteDepot(id) {
+  const res = await fetch(`${WAREHOUSE_URL}/depots/${id}`, { method: 'DELETE', headers: bearerHeader() })
+  return handleResponse(res)
+}
+export async function getDepotMagasins(id) {
+  const res = await fetch(`${WAREHOUSE_URL}/depots/${id}/magasins`, { headers: bearerHeader() })
+  return handleResponse(res)
+}
+export async function getDepotTree(id) {
+  const res = await fetch(`${WAREHOUSE_URL}/depots/${id}/tree`, { headers: bearerHeader() })
+  return handleResponse(res)
+}
+
+// ════════════════════════════════════════════════════════════
+// MAGASINS — port 8002
+// ════════════════════════════════════════════════════════════
+
+export async function getMagasins(params = {}) {
+  const res = await fetch(`${WAREHOUSE_URL}/magasins${qs(params)}`, { headers: bearerHeader() })
+  return handleResponse(res)
+}
+export async function getMagasin(id) {
+  const res = await fetch(`${WAREHOUSE_URL}/magasins/${id}`, { headers: bearerHeader() })
+  return handleResponse(res)
+}
+export async function createMagasin(data) {
+  const res = await fetch(`${WAREHOUSE_URL}/magasins`, { method: 'POST', headers: authHeader(), body: JSON.stringify(data) })
+  return handleResponse(res)
+}
+export async function updateMagasin(id, data) {
+  const res = await fetch(`${WAREHOUSE_URL}/magasins/${id}`, { method: 'PUT', headers: authHeader(), body: JSON.stringify(data) })
+  return handleResponse(res)
+}
+export async function deleteMagasin(id) {
+  const res = await fetch(`${WAREHOUSE_URL}/magasins/${id}`, { method: 'DELETE', headers: bearerHeader() })
+  return handleResponse(res)
+}
+
+// ════════════════════════════════════════════════════════════
+// TRANSFERTS — port 8002
+// ════════════════════════════════════════════════════════════
+
+export async function transfererDepotVersMagasin(data) {
+  const res = await fetch(`${WAREHOUSE_URL}/transfers/depot-to-magasin`, { method: 'POST', headers: authHeader(), body: JSON.stringify(data) })
+  return handleResponse(res)
+}
+export async function transfererMagasinVersDepot(data) {
+  const res = await fetch(`${WAREHOUSE_URL}/transfers/magasin-to-depot`, { method: 'POST', headers: authHeader(), body: JSON.stringify(data) })
+  return handleResponse(res)
+}
+export async function verifierCoherence() {
+  const res = await fetch(`${WAREHOUSE_URL}/coherence/check`, { headers: bearerHeader() })
   return handleResponse(res)
 }
 
