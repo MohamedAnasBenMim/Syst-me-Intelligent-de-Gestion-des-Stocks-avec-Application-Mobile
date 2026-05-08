@@ -21,7 +21,7 @@ from app.schemas import _verifier_marge
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
 async def _notifier_alerte(
@@ -55,7 +55,7 @@ async def _notifier_alerte(
             await client.post(
                 f"{settings.ALERT_SERVICE_URL}/api/v1/alertes/declencher",
                 json=payload,
-                headers={"Authorization": f"Bearer {token}"},
+                headers={"Authorization": f"Bearer {token}"} if token else {},
             )
     except Exception as e:
         logger.warning(f"Alerte non envoyée (service indisponible) : {e}")
@@ -350,7 +350,7 @@ async def create_produit(
     data:        schemas.ProduitCreate,
     db:          Session                      = Depends(get_db),
     _user:       dict                         = Depends(admin_or_manager),
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     reference = data.reference
     if not reference:
@@ -401,7 +401,7 @@ async def create_produit(
                                 f"dans {jours} jour(s)"
                             ),
                         },
-                        headers={"Authorization": f"Bearer {credentials.credentials}"},
+                        headers={"Authorization": f"Bearer {credentials.credentials}"} if credentials else {},
                     )
             except Exception as e:
                 logger.warning(f"Alerte expiration non envoyée : {e}")
@@ -607,7 +607,7 @@ async def augmenter_stock(
     data:        schemas.StockAugmenter,
     db:          Session                      = Depends(get_db),
     _user:       dict                         = Depends(all_roles),
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     produit = db.query(models.Produit).filter(
         models.Produit.id        == data.produit_id,
@@ -683,7 +683,12 @@ async def augmenter_stock(
     db.commit()
     db.refresh(stock)
 
-    await _notifier_alerte(produit, stock, stock.niveau_alerte, credentials.credentials)
+    await _notifier_alerte(
+        produit,
+        stock,
+        stock.niveau_alerte,
+        credentials.credentials if credentials else None,
+    )
 
     return schemas.StockOperationResponse(
         produit_id     = data.produit_id,
@@ -705,7 +710,7 @@ async def diminuer_stock(
     data:        schemas.StockDiminuer,
     db:          Session                      = Depends(get_db),
     _user:       dict                         = Depends(all_roles),
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     produit = db.query(models.Produit).filter(
         models.Produit.id        == data.produit_id,
@@ -764,7 +769,12 @@ async def diminuer_stock(
     db.commit()
     db.refresh(stock)
 
-    await _notifier_alerte(produit, stock, stock.niveau_alerte, credentials.credentials)
+    await _notifier_alerte(
+        produit,
+        stock,
+        stock.niveau_alerte,
+        credentials.credentials if credentials else None,
+    )
 
     return schemas.StockOperationResponse(
         produit_id     = data.produit_id,

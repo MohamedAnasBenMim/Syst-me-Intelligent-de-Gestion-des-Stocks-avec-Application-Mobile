@@ -24,6 +24,7 @@ class MouvementSettings(BaseSettings):
     JWT_SECRET_KEY:     str = Field(..., min_length=32)
     JWT_ALGORITHM:      str = Field(default="HS256")
     JWT_EXPIRE_MINUTES: int = Field(default=1440, gt=0)
+    INTEGRATION_SERVICE_SECRET: str = ""
 
     # ── URLs des autres services ───────────────────────────
     AUTH_SERVICE_URL:      str = "http://localhost:8001"

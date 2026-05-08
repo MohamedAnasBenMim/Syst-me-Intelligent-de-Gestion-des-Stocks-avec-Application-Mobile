@@ -1,6 +1,6 @@
 # app/dependencies.py — service_mouvement/
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from jose import JWTError, jwt
@@ -13,7 +13,7 @@ from app.config import settings
 # ═══════════════════════════════════════════════════════════
 
 # HTTPBearer affiche dans Swagger un champ "Value: Bearer <token>"
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -56,7 +56,8 @@ def verify_token(token: str) -> dict:
 # ═══════════════════════════════════════════════════════════
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security)
 ) -> dict:
     """
     Dépendance principale — injectée dans toutes les routes protégées.
@@ -67,8 +68,26 @@ def get_current_user(
         def liste(current_user: dict = Depends(get_current_user)):
             ...
     """
+    internal_secret = request.headers.get("X-Internal-Service-Secret")
+    if settings.INTEGRATION_SERVICE_SECRET and internal_secret == settings.INTEGRATION_SERVICE_SECRET:
+        return {
+            "user_id": 0,
+            "role": "admin",
+            "email": "integration@e-fatoora.local",
+        }
+
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token manquant",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     token = credentials.credentials
-    return verify_token(token)
+    payload = verify_token(token)
+    if payload.get("role"):
+        payload["role"] = str(payload["role"]).lower()
+    return payload
 
 
 def get_current_admin(

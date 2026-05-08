@@ -25,12 +25,18 @@ from app.config import settings
 router = APIRouter()
 
 # Instance HTTPBearer pour extraire le token brut
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
 # ═══════════════════════════════════════════════════════════
 # FONCTIONS UTILITAIRES — Appels HTTP vers Service Stock
 # ═══════════════════════════════════════════════════════════
+
+def _service_headers(token: str | None = None) -> dict:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    if settings.INTEGRATION_SERVICE_SECRET:
+        headers["X-Internal-Service-Secret"] = settings.INTEGRATION_SERVICE_SECRET
+    return headers
 
 async def appeler_stock_augmenter(
     produit_id    : int,
@@ -63,7 +69,7 @@ async def appeler_stock_augmenter(
         response = await client.patch(
             f"{settings.STOCK_SERVICE_URL}/api/v1/stocks/augmenter",
             json=payload,
-            headers={"Authorization": f"Bearer {token}"},
+            headers=_service_headers(token),
             timeout=10.0
         )
     if response.status_code != 200:
@@ -106,7 +112,7 @@ async def appeler_stock_diminuer(
         response = await client.patch(
             f"{settings.STOCK_SERVICE_URL}/api/v1/stocks/diminuer",
             json=payload,
-            headers={"Authorization": f"Bearer {token}"},
+            headers=_service_headers(token),
             timeout=10.0
         )
     if response.status_code != 200:
@@ -126,7 +132,7 @@ async def verifier_anomalies_mouvement(token: str):
         async with httpx.AsyncClient(timeout=10.0) as client:
             await client.post(
                 f"{settings.ALERTES_SERVICE_URL}/api/v1/alertes/anomalies/detecter",
-                headers={"Authorization": f"Bearer {token}"},
+                headers=_service_headers(token),
             )
     except Exception:
         pass  # Service Alertes indisponible → on continue sans bloquer
@@ -167,7 +173,7 @@ async def declencher_anomalie_stock_insuffisant(
                     "quantite_actuelle": quantite_disponible,
                     "message":           message,
                 },
-                headers={"Authorization": f"Bearer {token}"},
+                headers=_service_headers(token),
             )
     except Exception:
         pass
@@ -185,7 +191,7 @@ async def indexer_mouvement_dans_rag(mouvement_id: int, produit_id: int,
                 f"{settings.IA_RAG_SERVICE_URL}/api/v1/ia/embedding/vectoriser",
                 json={"produit_id": produit_id, "entrepot_id": entrepot_id,
                       "force_update": False},
-                headers={"Authorization": f"Bearer {token}"},
+                headers=_service_headers(token),
             )
     except Exception:
         pass  # IA-RAG indisponible → on continue sans bloquer
@@ -196,7 +202,7 @@ async def recuperer_nom_entrepot(entrepot_id: int, token: str, location_type: Op
     Résout le nom d'un dépôt ou magasin depuis Service Warehouse.
     Essaie /depots/{id} puis /magasins/{id} si le premier échoue.
     """
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = _service_headers(token)
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             endpoints = []
@@ -229,7 +235,7 @@ async def recuperer_nom_zone(zone_id: int, token: str) -> str:
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/zones/{zone_id}",
-                headers={"Authorization": f"Bearer {token}"},
+                headers=_service_headers(token),
                 timeout=5.0
             )
         if response.status_code == 200:
@@ -249,7 +255,7 @@ async def recuperer_produit_details(produit_id: int, token: str) -> dict:
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{settings.STOCK_SERVICE_URL}/api/v1/produits/{produit_id}",
-                headers={"Authorization": f"Bearer {token}"},
+                headers=_service_headers(token),
                 timeout=5.0
             )
         if response.status_code == 200:
@@ -269,7 +275,7 @@ async def assigner_reference_produit(produit_id: int, token: str) -> None:
         async with httpx.AsyncClient() as client:
             await client.patch(
                 f"{settings.STOCK_SERVICE_URL}/api/v1/produits/{produit_id}/ajouter-reference",
-                headers={"Authorization": f"Bearer {token}"},
+                headers=_service_headers(token),
                 timeout=5.0
             )
     except Exception:
@@ -303,7 +309,7 @@ async def appeler_ia_recommandation_expiration(
                     "jours_avant_expiration":  jours_restants,
                     "contexte_supplementaire": f"Date d'expiration : {date_expiration}",
                 },
-                headers={"Authorization": f"Bearer {token}"},
+                headers=_service_headers(token),
             )
         if r.status_code == 200:
             data = r.json()
@@ -356,7 +362,7 @@ async def declencher_alerte_expiration(
                     "quantite_actuelle": quantite,
                     "message":           message,
                 },
-                headers={"Authorization": f"Bearer {token}"},
+                headers=_service_headers(token),
             )
     except Exception:
         pass  # Service Alertes indisponible → on continue sans bloquer
@@ -372,7 +378,7 @@ async def recuperer_nom_produit(produit_id: int, token: str) -> str:
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{settings.STOCK_SERVICE_URL}/api/v1/produits/{produit_id}",
-                headers={"Authorization": f"Bearer {token}"},
+                headers=_service_headers(token),
                 timeout=5.0
             )
         if response.status_code == 200:
@@ -407,7 +413,7 @@ async def appeler_warehouse_update_capacite(
                 r = await client.patch(
                     f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/{ep}/{location_id}/capacite",
                     json={"delta": delta},
-                    headers={"Authorization": f"Bearer {token}"},
+                    headers=_service_headers(token),
                 )
                 if r.status_code == 200:
                     break
@@ -435,11 +441,11 @@ async def creer_mouvement(
     data        : MouvementCreate,
     db          : Session                      = Depends(get_db),
     current_user: dict                         = Depends(get_all_roles),
-    credentials : HTTPAuthorizationCredentials = Depends(security)
+    credentials : HTTPAuthorizationCredentials | None = Depends(security)
 ):
     # ── Extraire le token brut pour les appels inter-services ──
     # credentials.credentials = le token JWT brut sans "Bearer "
-    token = credentials.credentials
+    token = credentials.credentials if credentials else None
 
     # ── Validations spécifiques aux mouvements d'ENTREE ───────
     if data.type_mouvement == TypeMouvement.ENTREE:
@@ -848,9 +854,9 @@ async def annuler_mouvement(
     mouvement_id : int,
     db           : Session                      = Depends(get_db),
     current_user : dict                         = Depends(get_current_gestionnaire_or_admin),
-    credentials  : HTTPAuthorizationCredentials = Depends(security)
+    credentials  : HTTPAuthorizationCredentials | None = Depends(security)
 ):
-    token = credentials.credentials
+    token = credentials.credentials if credentials else None
 
     mouvement = db.query(Mouvement).filter(
         Mouvement.id == mouvement_id

@@ -5,6 +5,7 @@ import {
   BarChart2, Settings, LogOut, Brain,
   ShoppingCart, Users, Search, ChevronDown, Tag,
   AlertTriangle, X, Package, Truck, Building2, Store,
+  FileText,
 } from 'lucide-react'
 import logoImg from '../assets/becarthai-logo.jpg'
 import { useAuth } from '../context/AuthContext'
@@ -29,6 +30,8 @@ const navItems = [
   { to: '/dashboard/utilisateurs',         icon: Users,          label: 'Utilisateurs'        },
   { to: '/dashboard/parametres',           icon: Settings,       label: 'Paramètres'          },
 ]
+
+const fatooraDashboardUrl = import.meta.env.VITE_FATOORA_DASHBOARD_URL || 'http://localhost:5173/invoices'
 
 const PAGE_TITLES = {
   '/dashboard':                     { title: 'Tableau de bord', sub: 'SGS SaaS > Dashboard' },
@@ -218,6 +221,16 @@ export default function DashboardLayout({ children }) {
               )}
             </NavLink>
           ))}
+          <a
+            href={fatooraDashboardUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="ds-nav-item"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <FileText size={17} />
+            <span>E-Fatoora</span>
+          </a>
         </nav>
 
         <div className="ds-divider" />

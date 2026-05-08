@@ -5,12 +5,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.database import engine, Base
+from app.database import engine, Base, ensure_stock_schema
 from app.routes import router
 
 
 # ── Créer les tables PostgreSQL au démarrage ───────────────
 Base.metadata.create_all(bind=engine)
+ensure_stock_schema()
 
 
 # ── Application FastAPI ────────────────────────────────────
@@ -33,7 +34,7 @@ _DEV_ORIGINS = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins  = _DEV_ORIGINS if settings.DEBUG else ["https://sgs-saas.tn"],
+    allow_origins = ["*"] if settings.ENVIRONMENT != "production" else ["https://sgs-saas.tn"],
     allow_methods  = ["*"],
     allow_headers  = ["*"],
 )

@@ -1,7 +1,7 @@
 # app/database.py — service_auth/
 # Connexion PostgreSQL via SQLAlchemy
 
-from sqlalchemy import create_engine#sert à créer la connexion entre Python et la base de données.
+from sqlalchemy import create_engine, text#sert à créer la connexion entre Python et la base de données.
 from sqlalchemy.ext.declarative import declarative_base #Permet de créer la classe de base pour les modèles SQLAlchemy.
 from sqlalchemy.orm import sessionmaker, Session
 from typing import Generator#Utilisé pour typer la fonction get_db.
@@ -27,6 +27,26 @@ SessionLocal = sessionmaker(
 
 # ── Classe de base pour tous les modèles ──────────────────
 Base = declarative_base()
+
+
+def ensure_auth_schema() -> None:
+    """
+    Met à jour les anciennes bases locales sans supprimer les données.
+    create_all() crée les tables manquantes, mais n'ajoute pas les colonnes
+    ajoutées après coup dans les modèles SQLAlchemy.
+    """
+    statements = [
+        "ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS salaire DOUBLE PRECISION",
+        "ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS clerk_user_id VARCHAR(200)",
+        "ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS est_actif BOOLEAN DEFAULT TRUE NOT NULL",
+        "ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT now() NOT NULL",
+        "ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT now()",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_utilisateurs_clerk_user_id ON utilisateurs (clerk_user_id)",
+    ]
+
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
 
 
 # ── Dépendance FastAPI ────────────────────────────────────

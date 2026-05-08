@@ -28,7 +28,7 @@ _DEV_ORIGINS = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins  = _DEV_ORIGINS if settings.DEBUG else ["https://sgs-saas.tn"],
+    allow_origins = ["*"] if settings.ENVIRONMENT != "production" else ["https://sgs-saas.tn"],
     allow_methods  = ["*"],
     allow_headers  = ["*"],
 )

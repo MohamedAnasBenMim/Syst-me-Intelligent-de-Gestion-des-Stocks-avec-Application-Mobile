@@ -30,6 +30,7 @@ class StockSettings(BaseSettings):
     JWT_SECRET_KEY:     str = Field(..., min_length=32)
     JWT_ALGORITHM:      str = Field(default="HS256")
     JWT_EXPIRE_MINUTES: int = Field(default=1440, gt=0)
+    INTEGRATION_SERVICE_SECRET: str = ""
 
     # ── Redis Cache ────────────────────────────────────────
     REDIS_URL: str = Field(default="redis://localhost:6379")

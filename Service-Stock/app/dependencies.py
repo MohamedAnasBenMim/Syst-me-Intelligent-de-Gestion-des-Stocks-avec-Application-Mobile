@@ -1,23 +1,25 @@
 # app/dependencies.py — service_stock/
 # Dépendances FastAPI : JWT, rôles, session DB
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.auth import verify_token
 from app.database import get_db
+from app.config import settings
 
 
 # ── Scheme HTTPBearer ──────────────────────────────────────
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
 # ══════════════════════════════════════════════════════════
 # DÉPENDANCE : Vérifier le JWT
 # ══════════════════════════════════════════════════════════
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """
     Vérifie le token JWT à chaque requête protégée.
@@ -28,8 +30,22 @@ def get_current_user(
     Raises:
         HTTPException 401 si token absent/invalide/expiré
     """
+    internal_secret = request.headers.get("X-Internal-Service-Secret")
+    if settings.INTEGRATION_SERVICE_SECRET and internal_secret == settings.INTEGRATION_SERVICE_SECRET:
+        return {"user_id": 0, "role": "admin", "email": "integration@e-fatoora.local"}
+
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token manquant",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     token = credentials.credentials
-    return verify_token(token)
+    user = verify_token(token)
+    if user.get("role"):
+        user["role"] = str(user["role"]).lower()
+    return user
 
 
 # ══════════════════════════════════════════════════════════

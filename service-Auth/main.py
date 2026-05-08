@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import logging
 
 from app.config import settings
-from app.database import engine, Base, SessionLocal
+from app.database import engine, Base, SessionLocal, ensure_auth_schema
 from app.routes import router
 
 logging.basicConfig(level=logging.INFO)
@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 # ── Créer les tables PostgreSQL au démarrage ───────────────
 Base.metadata.create_all(bind=engine)
+ensure_auth_schema()
 
 
 # ── Seed : créer l'admin par défaut s'il n'existe pas ──────
@@ -69,12 +70,15 @@ app = FastAPI(
 # ── CORS ───────────────────────────────────────────────────
 _DEV_ORIGINS = [
     "http://localhost:5173", "http://127.0.0.1:5173",
+    "http://localhost:5174", "http://127.0.0.1:5174",
+    "http://localhost:5175", "http://127.0.0.1:5175",
+    "http://localhost:5176", "http://127.0.0.1:5176",
     "http://localhost:3000",  "http://127.0.0.1:3000",
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins  = _DEV_ORIGINS if settings.DEBUG else ["https://sgs-saas.tn"],
+    allow_origins = ["*"] if settings.ENVIRONMENT != "production" else ["https://sgs-saas.tn"],
     allow_methods  = ["*"],
     allow_headers  = ["*"],
 )
