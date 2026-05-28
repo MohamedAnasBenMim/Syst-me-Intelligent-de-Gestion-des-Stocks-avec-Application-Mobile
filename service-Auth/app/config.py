@@ -73,7 +73,7 @@ class AuthSettings(BaseSettings):
         extra="ignore",
     )
 
-
+#les paramètres ne sont lus qu'une seule fois depuis le disque, puis mis en cache en mémoire. Très important pour la performance dans une API.
 @lru_cache(maxsize=1)
 def get_settings() -> AuthSettings:
     return AuthSettings()

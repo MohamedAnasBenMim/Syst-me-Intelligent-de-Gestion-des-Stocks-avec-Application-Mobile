@@ -105,6 +105,32 @@ async def startup_event():
     logger.info(f"  ChromaDB   : {settings.CHROMA_PERSIST_DIR}")
     logger.info("=" * 60)
 
+    # ── Créer le makefile manquant de Prophet/cmdstan ──────────────
+    try:
+        import importlib.resources as res_lib, os as _os
+        _p = str(res_lib.files('prophet') / 'stan_model' / 'cmdstan-2.33.1')
+        _f = _os.path.join(_p, 'makefile')
+        if not _os.path.exists(_f):
+            open(_f, 'w').write('CMDSTAN_VERSION := 2.33.1\n')
+            logger.info("[ML] Prophet makefile créé automatiquement")
+    except Exception as _e:
+        logger.warning(f"[ML] Prophet makefile fix: {_e}")
+
+    # ── Installer cmdstan (backend C++ de Prophet) en arrière-plan ──
+    # Sans cmdstan, Prophet échoue silencieusement → fallback LinearRegression
+    import asyncio, concurrent.futures
+    def _install_cmdstan():
+        try:
+            import cmdstanpy
+            cmdstanpy.install_cmdstan(overwrite=False)   # no-op si déjà installé
+            logger.info("[ML] cmdstan installé — Prophet opérationnel")
+        except Exception as e:
+            logger.warning(f"[ML] cmdstan non installé: {e} — LinearRegression sera utilisé en fallback")
+
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(concurrent.futures.ThreadPoolExecutor(max_workers=1), _install_cmdstan)
+    logger.info("[ML] Installation cmdstan lancée en arrière-plan (~2 min au 1er démarrage)")
+
     try:
         from app.routes import get_embedding_model
         model = get_embedding_model()

@@ -31,6 +31,12 @@ try:
 except ImportError:
     _PROPHET_AVAILABLE = False
 
+try:
+    from sklearn.ensemble import IsolationForest as _IsolationForest
+    _IF_AVAILABLE = True
+except ImportError:
+    _IF_AVAILABLE = False
+
 from app.database import get_db
 from app.models import Rapport, Prevision, TypeRapport, StatutRapport, CalculProfitPerte
 from app.schemas import (
@@ -103,6 +109,24 @@ async def recuperer_entrepots(token: str) -> list:
         return []
 
 
+async def recuperer_total_produits(token: str) -> int:
+    """Récupère le nombre total de produits depuis Service Stock."""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"{settings.STOCK_SERVICE_URL}/api/v1/produits",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"limit": 500},
+                timeout=10.0
+            )
+            if r.status_code == 200:
+                data = r.json()
+                return len(data) if isinstance(data, list) else data.get("total", len(data.get("produits", [])))
+        return 0
+    except Exception:
+        return 0
+
+
 async def recuperer_stats_alertes(token: str) -> dict:
     """Récupère les statistiques des alertes depuis Service Alertes."""
     try:
@@ -118,7 +142,7 @@ async def recuperer_stats_alertes(token: str) -> dict:
 
 
 # ═══════════════════════════════════════════════════════
-# ML DESCRIPTIF — calculer_kpi()
+# BI calculer_kpi()
 # ═══════════════════════════════════════════════════════
 # Collecte les données de tous les services
 # et calcule les indicateurs clés (KPI)
@@ -141,6 +165,7 @@ async def calculer_kpi(token: str) -> KPIGlobaux:
     entrepots = await recuperer_entrepots(token)
     alertes   = await recuperer_stats_alertes(token)
     mouvements = await recuperer_mouvements(token)
+    total_produits_count = await recuperer_total_produits(token)
 
     # ── Calcul taux occupation moyen ───────────────────
     # Calculé depuis les stocks réels / capacite_max entrepôt
@@ -189,7 +214,7 @@ async def calculer_kpi(token: str) -> KPIGlobaux:
             valeur_total += quantite * prix_ref
 
     return KPIGlobaux(
-        total_produits        = len(set(s["produit_id"] for s in stocks)),
+        total_produits        = total_produits_count if total_produits_count > 0 else len(set(s["produit_id"] for s in stocks)),
         total_entrepots       = len(entrepots),
         total_stocks_actifs   = len(stocks),
         total_mouvements_jour = mvt_jour,
@@ -397,7 +422,7 @@ async def get_dashboard(
 ):
     token = credentials.credentials
 
-    # ── ML Descriptif : KPI ────────────────────────────
+    # ──  Descriptif : KPI ────────────────────────────
     kpi        = await calculer_kpi(token)
     stocks     = await recuperer_stocks(token)
     mouvements = await recuperer_mouvements(token)
@@ -597,7 +622,7 @@ async def lister_rapports(
     """
 )
 async def detecter_anomalies_reporting(
-    current_user: dict                         = Depends(get_current_gestionnaire_or_admin),
+    current_user: dict                         = Depends(get_all_roles),
     credentials : HTTPAuthorizationCredentials = Depends(security),
 ):
     token      = credentials.credentials
@@ -708,6 +733,62 @@ async def detecter_anomalies_reporting(
                     )
                 })
 
+    # ════════════════════════════════════════════════════
+    # ANOMALIE 4 — Isolation Forest (ML statistique)
+    # Features : quantite, heure du mouvement, type encodé
+    # contamination=0.05 → ~5% de mouvements considérés anormaux
+    # ════════════════════════════════════════════════════
+    if _IF_AVAILABLE and len(mouvements) >= 5:
+        try:
+            type_enc = {"entree": 0, "sortie": 1, "transfert": 2}
+            features = []
+            for m in mouvements:
+                qte = float(m.get("quantite") or 0)
+                try:
+                    dt    = datetime.fromisoformat((m.get("created_at") or "").replace("Z", "+00:00"))
+                    heure = dt.hour
+                except Exception:
+                    heure = 12
+                t = type_enc.get(m.get("type_mouvement", ""), 0)
+                features.append([qte, heure, t])
+
+            X      = np.array(features)
+            clf    = _IsolationForest(contamination=0.05, n_estimators=100, random_state=42)
+            preds  = clf.fit_predict(X)
+            scores = clf.decision_function(X)   # négatif = plus anormal
+
+            ids_deja = {a["mouvement_id"] for a in anomalies}
+
+            for i, m in enumerate(mouvements):
+                if preds[i] != -1 or m.get("id") in ids_deja:
+                    continue
+                score = round(float(scores[i]), 4)
+                qte   = float(m.get("quantite") or 0)
+                heure_str = ""
+                try:
+                    dt = datetime.fromisoformat((m.get("created_at") or "").replace("Z", "+00:00"))
+                    heure_str = f" à {dt.hour:02d}h{dt.minute:02d}"
+                except Exception:
+                    pass
+                anomalies.append({
+                    "mouvement_id":   m.get("id"),
+                    "produit_id":     m.get("produit_id"),
+                    "produit_nom":    m.get("produit_nom", f"Produit {m.get('produit_id')}"),
+                    "entrepot_id":    m.get("entrepot_source_id") or m.get("entrepot_dest_id"),
+                    "quantite":       qte,
+                    "type":           m.get("type_mouvement"),
+                    "date":           (m.get("created_at") or "")[:10],
+                    "type_anomalie":  "isolation_forest",
+                    "score_anomalie": score,
+                    "raison":         (
+                        f"Mouvement statistiquement anormal (Isolation Forest, score={score}) — "
+                        f"{m.get('type_mouvement', '')} de {qte} unités{heure_str} — "
+                        f"comportement inhabituel par rapport à l'historique"
+                    ),
+                })
+        except Exception:
+            pass  # données insuffisantes ou erreur sklearn
+
     return {
         "success":          True,
         "message":          f"Analyse terminée — {len(mouvements)} mouvements analysés",
@@ -812,6 +893,7 @@ async def _appeler_ia_analyse_pl(
     valeur_stock: float,
     profit: float,
     statut: str,
+    token: str = "",
 ) -> AnalyseIA | None:
     """
     Appel async IA-RAG pour analyser le P&L.
@@ -842,10 +924,12 @@ async def _appeler_ia_analyse_pl(
             f"Donne 3 recommandations courtes et concrètes pour améliorer la rentabilité."
         )
 
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.post(
                 f"{settings.IA_RAG_SERVICE_URL}/api/v1/ia/question",
                 json={"question": prompt},
+                headers=headers,
             )
             if r.status_code == 200:
                 reponse_ia = r.json().get("reponse", "")
@@ -884,7 +968,7 @@ def _construire_pertes_response(data: dict) -> PertesProduitsResponse:
                 designation       = p["designation"],
                 date_expiration   = p["date_expiration"],
                 quantite_restante = p["quantite_restante"],
-                prix_unitaire     = p["prix_unitaire"],
+                prix_unitaire     = p.get("prix_cout") or p.get("prix_unitaire") or 0,
                 valeur_perdue     = p["valeur_perdue"],
                 entrepot_id       = p.get("depot_id") or p.get("magasin_id"),
                 location_type     = p.get("location_type"),
@@ -1091,6 +1175,7 @@ async def calculer_profit_perte(
         valeur_stock    = valeur_stock,
         profit          = profit,
         statut          = statut,
+        token           = token,
     )
 
     # ── 6. Sauvegarder ────────────────────────────────

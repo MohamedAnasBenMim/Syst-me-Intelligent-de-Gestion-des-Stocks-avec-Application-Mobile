@@ -198,8 +198,8 @@ services:
       - sgs-network
 
   # ── Ollama — LLM local (fallback si Groq indisponible) ───────
-  # Modèle téléchargé automatiquement au premier démarrage (~4 Go)
-  # Interface : http://localhost:11434
+  # Pour télécharger mistral manuellement après démarrage :
+  #   docker exec sgs-ollama ollama pull mistral:7b
   ollama:
     image: ollama/ollama:latest
     container_name: sgs-ollama
@@ -210,8 +210,8 @@ services:
       - ollama_models:/root/.ollama
     networks:
       - sgs-network
-    # Télécharge mistral:7b automatiquement si absent
-    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5 && ollama pull mistral:7b && wait"]
+    # Sert simplement Ollama — le pull du modèle est manuel (évite timeout)
+    entrypoint: ["ollama", "serve"]
 
   # ── Service 8 : IA/RAG (8008) ─────────────────────────────────
   # Deux bases de données :
@@ -235,12 +235,12 @@ services:
       OLLAMA_BASE_URL:          http://ollama:11434
     volumes:
       - chroma_data:/app/data/chroma
+      - ml_models_data:/app/data/ml_models
+      - cmdstan_data:/root/.cmdstan
     depends_on:
       postgres:
         condition: service_healthy
       service-mouvement:
-        condition: service_started
-      ollama:
         condition: service_started
     networks:
       - sgs-network
@@ -315,8 +315,10 @@ networks:
     driver: bridge
 
 volumes:
-  postgres_data:   # Données PostgreSQL persistantes
-  chroma_data:     # Vecteurs ChromaDB persistants (Service IA/RAG)
-  ollama_models:   # Modèles LLM Ollama (mistral:7b ~4 Go)
-  n8n_data:        # Workflows n8n persistants
-  jenkins_home:    # Configuration et jobs Jenkins persistants
+  postgres_data:    # Données PostgreSQL persistantes
+  chroma_data:      # Vecteurs ChromaDB persistants (Service IA/RAG)
+  ml_models_data:   # Modèles Prophet/LR entraînés (Service IA/RAG)
+  cmdstan_data:     # Binaire C++ CmdStan (Prophet backend) — compilé une seule fois
+  ollama_models:    # Modèles LLM Ollama (mistral:7b ~4 Go)
+  n8n_data:         # Workflows n8n persistants
+  jenkins_home:     # Configuration et jobs Jenkins persistants

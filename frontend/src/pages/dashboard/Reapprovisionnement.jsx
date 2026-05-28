@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { RefreshCw, Brain, AlertCircle, AlertTriangle, CheckCircle, Package,
          Warehouse, Loader, Check, X, Send } from 'lucide-react'
 import DashboardLayout from '../../components/DashboardLayout'
-import { getPrevisions, getRecommandations, sendFeedback, askQuestion, createRecommandation, createMouvement } from '../../services/api'
+import { getPrevisions, getRecommandations, sendFeedback, askQuestion, createRecommandation, createMouvement, mlTrain } from '../../services/api'
 import { useAuth } from '../../context/AuthContext'
 import './Reapprovisionnement.css'
 
@@ -358,7 +358,7 @@ function RecommandationCard({ rec, onFeedback }) {
       </div>
       <div className="rec-meta">
         <span><Package size={12} /> Produit #{rec.produit_id}</span>
-        <span><Warehouse size={12} /> Entrepôt #{rec.entrepot_id || '—'}</span>
+        <span><Warehouse size={12} /> Dépôt #{rec.entrepot_id || '—'}</span>
         {rec.quantite_suggeree && (
           <span className="rec-qty-chip">Commander {Math.round(rec.quantite_suggeree)} unités</span>
         )}
@@ -572,15 +572,17 @@ export default function Reapprovisionnement() {
           `Commande enregistrée : ${qte} unités de ${prevision.produit_nom} → ${prevision.entrepot_nom}. ` +
           `Les alertes associées seront résolues automatiquement si le stock repasse au-dessus du seuil.`
         )
+        // Ré-entraîner ML + rafraîchir prévisions en background
+        mlTrain({ force_retrain: true }).catch(() => {})
+        fetchPrevisions()
         // Générer recommandation IA en background (non bloquant)
         createRecommandation({
           produit_id:              prevision.produit_id,
           entrepot_id:             prevision.entrepot_id,
-          stock_actuel:            prevision.stock_actuel,
+          stock_actuel:            prevision.stock_actuel + qte,
           seuil_min:               prevision.seuil_min,
-          contexte_supplementaire: `Commande passée : ${qte} unités. Rupture prévue dans ${prevision.jours_avant_rupture} jours.`,
+          contexte_supplementaire: `Commande passée : ${qte} unités. Stock après commande : ${prevision.stock_actuel + qte}.`,
         }).then(() => fetchRecs()).catch(() => {})
-        fetchPrevisions()
       } catch (e) {
         setGenResult(`Erreur: ${e.message}`)
       } finally {
@@ -631,6 +633,27 @@ export default function Reapprovisionnement() {
 
     await fetchRecs()
   }
+
+  // Masquer les recommandations en attente dont le stock est revenu au-dessus du seuil
+  const stockNormalSet = new Set(
+    previsions
+      .filter(p => p.urgence === 'stable' || p.urgence === 'basse')
+      .map(p => `${p.produit_id}-${p.entrepot_id}`)
+  )
+  // Produits actuellement en rupture imminente — une promotion serait contradictoire
+  const enRuptureIds = new Set(
+    previsions
+      .filter(p => p.urgence === 'haute' || p.urgence === 'critique')
+      .map(p => p.produit_id)
+  )
+  const recsVisibles = recommandations.filter(r => {
+    if (r.statut !== 'GENEREE') return true  // conserver acceptées/rejetées
+    if (stockNormalSet.has(`${r.produit_id}-${r.entrepot_id}`)) return false
+    // Promo contradictoire : masquer si le produit est en rupture imminente
+    const isPromo = r.type === 'promotion' || r.type === 'PROMOTION'
+    if (isPromo && enRuptureIds.has(r.produit_id)) return false
+    return true
+  })
 
   return (
     <DashboardLayout>
@@ -735,8 +758,8 @@ export default function Reapprovisionnement() {
             <div className="reappro-card-title">
               <Brain size={18} color="var(--teal)" />
               <span>Recommandations IA</span>
-              {!loadingRec && recommandations.length > 0 && (
-                <span className="rec-count-badge">{recommandations.length}</span>
+              {!loadingRec && recsVisibles.length > 0 && (
+                <span className="rec-count-badge">{recsVisibles.length}</span>
               )}
             </div>
             <button className="btn-refresh" onClick={fetchRecs}>
@@ -746,7 +769,7 @@ export default function Reapprovisionnement() {
 
           {loadingRec ? (
             <div className="reappro-loading"><Loader size={20} className="spin" /> Chargement…</div>
-          ) : recommandations.length === 0 ? (
+          ) : recsVisibles.length === 0 ? (
             <div className="reappro-empty">
               <Brain size={32} color="#C4B5FD" />
               <p style={{ fontWeight: 600, color: '#374151' }}>Aucune recommandation générée</p>
@@ -758,13 +781,13 @@ export default function Reapprovisionnement() {
           ) : (
             <>
               {/* Recommandations en attente de décision (statut GENEREE) */}
-              {recommandations.filter(r => r.statut === 'GENEREE').length > 0 && (
+              {recsVisibles.filter(r => r.statut === 'GENEREE').length > 0 && (
                 <>
                   <div style={{ fontSize: 12, fontWeight: 600, color: '#E8730A', marginBottom: 8, padding: '0 4px' }}>
-                    En attente de décision ({recommandations.filter(r => r.statut === 'GENEREE').length})
+                    En attente de décision ({recsVisibles.filter(r => r.statut === 'GENEREE').length})
                   </div>
                   <div className="rec-list">
-                    {recommandations
+                    {recsVisibles
                       .filter(r => r.statut === 'GENEREE')
                       .map(rec => (
                         <RecommandationCard key={rec.id} rec={rec} onFeedback={handleFeedback} />
@@ -774,13 +797,13 @@ export default function Reapprovisionnement() {
               )}
 
               {/* Recommandations déjà traitées (ACCEPTEE / REJETEE) */}
-              {recommandations.filter(r => r.statut !== 'GENEREE').length > 0 && (
+              {recsVisibles.filter(r => r.statut !== 'GENEREE').length > 0 && (
                 <>
                   <div style={{ fontSize: 12, fontWeight: 600, color: '#6B7280', margin: '16px 0 8px', padding: '0 4px' }}>
-                    Historique — Donner votre avis ({recommandations.filter(r => r.statut !== 'GENEREE').length})
+                    Historique — Donner votre avis ({recsVisibles.filter(r => r.statut !== 'GENEREE').length})
                   </div>
                   <div className="rec-list">
-                    {recommandations
+                    {recsVisibles
                       .filter(r => r.statut !== 'GENEREE')
                       .map(rec => (
                         <RecommandationCard key={rec.id} rec={rec} onFeedback={handleFeedback} />

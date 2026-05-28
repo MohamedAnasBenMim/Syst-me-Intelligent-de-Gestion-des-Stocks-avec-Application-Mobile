@@ -4,6 +4,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
+from sqlalchemy import or_, and_
 from typing import List, Optional
 from datetime import datetime, date
 import httpx
@@ -660,6 +661,14 @@ async def augmenter_stock(
             ).first()
 
         if not stock:
+            # Fallback : chercher par entrepot_id legacy (depot_id/magasin_id peut être NULL)
+            stock = db.query(models.Stock).filter(
+                models.Stock.produit_id  == data.produit_id,
+                models.Stock.entrepot_id == entrepot_id_val,
+                models.Stock.numero_lot  == None,
+            ).first()
+
+        if not stock:
             stock = models.Stock(
                 produit_id    = data.produit_id,
                 entrepot_id   = entrepot_id_val,
@@ -1059,27 +1068,39 @@ async def get_produits_perimes(
         db.query(models.Stock, models.Produit)
         .join(models.Produit, models.Stock.produit_id == models.Produit.id)
         .filter(
-            models.Produit.date_expiration != None,
-            models.Produit.date_expiration <  aujourd_hui,
-            models.Produit.est_actif       == True,
-            models.Stock.quantite          >  0,
+            or_(
+                # Lot expiré : a sa propre date et elle est passée
+                and_(
+                    models.Stock.date_expiration != None,
+                    models.Stock.date_expiration < aujourd_hui,
+                ),
+                # Pas de date lot → on utilise la date produit si elle est passée
+                and_(
+                    models.Stock.date_expiration == None,
+                    models.Produit.date_expiration != None,
+                    models.Produit.date_expiration < aujourd_hui,
+                ),
+            ),
+            models.Stock.quantite > 0,
         )
         .all()
     )
 
     categories: dict[str, dict] = {}
     for stock, produit in lignes:
-        cat    = produit.categorie or "Sans catégorie"
-        valeur = round(produit.prix_unitaire * stock.quantite, 2)
+        cat = produit.categorie or "Sans catégorie"
+        # Coût réel : prix_achat_lot > prix_achat produit > prix_unitaire (fallback)
+        prix_cout = stock.prix_achat_lot or produit.prix_achat or produit.prix_unitaire or 0
+        valeur = round(prix_cout * stock.quantite, 2)
         if cat not in categories:
             categories[cat] = {"categorie": cat, "produits": [], "total_categorie": 0.0}
         categories[cat]["produits"].append({
             "produit_id":       produit.id,
             "reference":        produit.reference,
             "designation":      produit.designation,
-            "date_expiration":  str(produit.date_expiration),
+            "date_expiration":  str(stock.date_expiration or produit.date_expiration),
             "quantite_restante": stock.quantite,
-            "prix_unitaire":    produit.prix_unitaire,
+            "prix_cout":        prix_cout,
             "valeur_perdue":    valeur,
             "location_type":    stock.location_type,
             "depot_id":         stock.depot_id,

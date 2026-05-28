@@ -352,6 +352,15 @@ export async function verifierExpirations(seuilJours = 30) {
   return handleResponse(res)
 }
 
+/** POST /alertes/anomalies/detecter → { success, anomalies_count, alertes_creees, anomalies } */
+export async function detecterAnomalies() {
+  const res = await fetch(`${ALERTES_URL}/alertes/anomalies/detecter`, {
+    method: 'POST',
+    headers: bearerHeader(),
+  })
+  return handleResponse(res)
+}
+
 /** PUT /alertes/{id} → AlerteResponse  (changer statut) */
 export async function updateAlerte(id, data) {
   const res = await fetch(`${ALERTES_URL}/alertes/${id}`, {
@@ -507,6 +516,14 @@ export async function sendFeedback(id, feedback) {
 export async function getPrevisions(seuilJours = 30) {
   const res = await fetch(`${IA_URL}/ia/previsions?seuil_jours=${seuilJours}`, {
     headers: bearerHeader(),
+  })
+  return handleResponse(res)
+}
+
+/** POST /ia/ml/train → MLTrainResponse — entraîne Prophet/LR sur l'historique des sorties */
+export async function mlTrain(data = { force_retrain: true }) {
+  const res = await fetch(`${IA_URL}/ia/ml/train`, {
+    method: 'POST', headers: bearerHeader(), body: JSON.stringify(data),
   })
   return handleResponse(res)
 }

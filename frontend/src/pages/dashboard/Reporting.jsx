@@ -49,7 +49,7 @@ async function buildIAPrompt(mode) {
   const kpiBlock = kpi ? `
 === INDICATEURS CLÉS (KPI) ===
 - Produits en stock           : ${kpi.total_produits ?? '?'}
-- Entrepôts actifs            : ${kpi.total_entrepots ?? '?'}
+- Dépôts actifs               : ${kpi.total_entrepots ?? '?'}
 - Stocks actifs (références)  : ${kpi.total_stocks_actifs ?? '?'}
 - Alertes actives             : ${kpi.total_alertes_actives ?? '?'}
 - Dont critiques              : ${kpi.total_critiques ?? '?'}

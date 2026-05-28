@@ -55,7 +55,9 @@ from app.schemas import (
     QuestionRequest, QuestionResponse,
     PrevisionProduit, PrevisionResponse,
     PromotionIARequest, PromotionIAResponse,
+    MLTrainRequest, MLTrainResponse, MLTrainResultat, MLStatusResponse,
 )
+from app.ml_forecasting import StockForecaster, list_trained_models, MODELS_DIR
 from app.dependencies import (
     get_current_user, get_current_admin,
     get_current_gestionnaire_or_admin, get_pagination
@@ -122,13 +124,32 @@ def mouvement_to_text(m: dict) -> str:
     quantite    = m.get("quantite", 0)
     produit_id  = m.get("produit_id") or 0
     produit_nom = m.get("produit", {}).get("designation") or f"Produit {produit_id}"
-    entrepot_id = m.get("entrepot_id") or 0
-    entrepot_nom = m.get("entrepot", {}).get("nom") or f"Entrepôt {entrepot_id}"
     stock_apres  = m.get("stock_apres")
     reference    = m.get("reference", "")
 
+    # Résolution du nom de l'emplacement source (nouveau schéma depot/magasin)
+    src_nom = (
+        m.get("source_depot_nom")
+        or m.get("source_magasin_nom")
+        or m.get("entrepot", {}).get("nom")
+    )
+    dst_nom = (
+        m.get("destination_depot_nom")
+        or m.get("destination_magasin_nom")
+    )
+    if not src_nom:
+        src_id   = m.get("source_depot_id") or m.get("source_magasin_id") or m.get("entrepot_id")
+        src_type = m.get("source_type") or ""
+        if src_id:
+            src_nom = f"Magasin {src_id}" if src_type == "MAGASIN" or m.get("source_magasin_id") else f"Dépôt {src_id}"
+        else:
+            src_nom = "stock"
+
     texte = f"Le {date}, {type_mvt} de {quantite} unités du produit {produit_nom} (ID:{produit_id})"
-    texte += f" depuis {entrepot_nom}."
+    if type_mvt == "transfert" and dst_nom:
+        texte += f" depuis {src_nom} vers {dst_nom}."
+    else:
+        texte += f" depuis {src_nom}."
     if stock_apres is not None:
         texte += f" Stock après opération: {stock_apres} unités."
     if reference:
@@ -371,10 +392,12 @@ def construire_prompt(produit_id, produit_nom, entrepot_nom,
             else "Stock faible - surveiller")
 
     return f"""Tu es un assistant expert en gestion de stock pour une entreprise tunisienne.
+IMPORTANT: Cette entreprise utilise des DÉPÔTS et des MAGASINS (jamais des "entrepôts").
+ Utilise toujours "dépôt" ou "magasin" dans tes réponses, jamais "entrepôt".
 
 SITUATION ACTUELLE:
 - Produit: {produit_nom} (ID: {produit_id})
-- Entrepôt: {entrepot_nom}
+- Dépôt: {entrepot_nom}
 - Stock actuel: {stock_actuel} unités
 - Seuil minimum: {seuil_min} unités
 - État: {etat}
@@ -933,12 +956,21 @@ async def recuperer_contexte_temps_reel(token: str) -> str:
                     p = s.get("produit") or {}
                     e = s.get("entrepot") or {}
                     nom = p.get("designation", f"Produit {s.get('produit_id')}")
-                    entrepot = e.get("nom", f"Entrepôt {s.get('entrepot_id')}")
+                    # Résolution du nom du dépôt/magasin — jamais "Entrepôt X"
+                    loc_nom = (
+                        e.get("nom")
+                        or s.get("depot_nom")
+                        or s.get("magasin_nom")
+                    )
+                    if not loc_nom or "entrepot" in (loc_nom or "").lower() or "entrepôt" in (loc_nom or "").lower():
+                        loc_id  = s.get("depot_id") or s.get("magasin_id") or s.get("entrepot_id")
+                        loc_type = s.get("location_type") or "DEPOT"
+                        loc_nom = f"Magasin {loc_id}" if loc_type == "MAGASIN" else f"Dépôt {loc_id}"
                     qte = s.get("quantite", 0)
                     seuil = p.get("seuil_alerte_min", 10)
                     exp = p.get("date_expiration", "")
                     statut = "CRITIQUE" if qte < seuil else ("BAS" if qte < seuil * 2 else "OK")
-                    ligne = f"- {nom} | {entrepot} | stock={qte} unités | seuil_min={seuil} | statut={statut}"
+                    ligne = f"- {nom} | {loc_nom} | stock={qte} unités | seuil_min={seuil} | statut={statut}"
                     if exp:
                         ligne += f" | expire={exp}"
                     lignes.append(ligne)
@@ -957,9 +989,12 @@ async def recuperer_contexte_temps_reel(token: str) -> str:
                 if actives:
                     lignes.append("=== ALERTES ACTIVES ===")
                     for a in actives[:10]:
+                        depot_label = a.get('entrepot_nom') or a.get('depot_nom') or f"Dépôt {a.get('entrepot_id','?')}"
+                        if "entrepot" in depot_label.lower() or "entrepôt" in depot_label.lower():
+                            depot_label = f"Dépôt {a.get('entrepot_id','?')}"
                         lignes.append(
                             f"- [{a.get('niveau')}] {a.get('produit_nom')} | "
-                            f"entrepot={a.get('entrepot_nom')} | "
+                            f"depot={depot_label} | "
                             f"qte={a.get('quantite_actuelle')} | "
                             f"{str(a.get('message',''))[:100]}"
                         )
@@ -1003,6 +1038,7 @@ async def route_question(
 
     prompt = f"""Tu es un assistant expert en gestion de stock pour une entreprise tunisienne.
 Réponds en français, de manière claire, précise et utile, en te basant sur les données fournies.
+IMPORTANT: Cette entreprise utilise des DÉPÔTS et des MAGASINS. N'utilise JAMAIS le mot "entrepôt" dans ta réponse — remplace-le toujours par "dépôt" ou "magasin" selon le contexte.
 
 QUESTION DE L'UTILISATEUR:
 {request.question}
@@ -1018,6 +1054,7 @@ INSTRUCTIONS:
 - Complète avec l'historique des mouvements si pertinent
 - Donne des chiffres précis (stock actuel, jours avant rupture, quantité à commander)
 - Si un produit est en alerte critique, indique-le clairement
+- Appelle toujours les emplacements "Dépôt X" ou "Magasin X", jamais "Entrepôt X"
 - Réponds directement en texte naturel, sans JSON"""
 
     llm_response = appeler_llm(prompt)
@@ -1083,6 +1120,31 @@ async def route_previsions(
             genere_le=datetime.now(timezone.utc)
         )
 
+    # ── 1b. Récupérer les noms réels des dépôts et magasins ──────────
+    depots_noms:   dict = {}
+    magasins_noms: dict = {}
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r_dep = await client.get(
+                f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/depots",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if r_dep.status_code == 200:
+                raw = r_dep.json()
+                items = raw if isinstance(raw, list) else raw.get("depots", raw.get("items", []))
+                depots_noms = {d["id"]: d["nom"] for d in items if "id" in d and "nom" in d}
+
+            r_mag = await client.get(
+                f"{settings.WAREHOUSE_SERVICE_URL}/api/v1/magasins",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if r_mag.status_code == 200:
+                raw = r_mag.json()
+                items = raw if isinstance(raw, list) else raw.get("magasins", raw.get("items", []))
+                magasins_noms = {m["id"]: m["nom"] for m in items if "id" in m and "nom" in m}
+    except Exception as _e:
+        logger.warning(f"[Prévisions] Noms dépôts/magasins indisponibles: {_e}")
+
     # ── 2. Récupérer l'historique des mouvements (30 derniers jours) ─
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -1098,101 +1160,164 @@ async def route_previsions(
         logger.error(f"Erreur récupération mouvements: {e}")
         mouvements = []
 
-    # ── 3. Calculer sorties par (produit_id, entrepot_id) sur 30j ──
-    # Utilise entrepot_source_id pour les SORTIES (schéma Mouvement)
-    sorties: dict = defaultdict(list)
+    # ── 3. Calculer sorties par (produit_id, entrepot_id) ──────────
+    # sorties_30j  : quantités uniquement sur 30 jours (fallback sliding average)
+    # sorties_full : tous les mouvements pour entraîner/interroger le modèle ML
+    sorties_30j:  dict = defaultdict(list)
+    sorties_full: dict = defaultdict(list)
     now = datetime.now(timezone.utc)
 
     for m in mouvements:
         if m.get("type_mouvement") not in ("sortie", "SORTIE"):
             continue
         try:
+            pid      = m.get("produit_id")
+            # entrepot_source_id peut être null → grouper par produit seul (eid=0)
+            eid      = m.get("entrepot_source_id") or m.get("entrepot_id") or 0
             date_str = m.get("created_at", "")
-            if date_str:
-                dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                if (now - dt).days <= 30:
-                    pid = m.get("produit_id")
-                    # Pour une SORTIE : entrepot_source_id est l'entrepôt concerné
-                    eid = m.get("entrepot_source_id") or m.get("entrepot_id")
-                    sorties[(pid, eid)].append(float(m.get("quantite", 0)))
+            if not (pid and date_str):
+                continue
+            dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            sorties_full[(pid, eid)].append(m)
+            if (now - dt).days <= 90:
+                sorties_30j[(pid, eid)].append(float(m.get("quantite", 0)))
         except Exception:
             continue
 
     # ── 4. Calculer la prévision pour TOUS les stocks ─────────────
+    nb_ml = 0  # compteur de modèles ML utilisés
+
     for stock in stocks:
         try:
-            produit_id  = stock.get("produit_id")
-            entrepot_id = stock.get("entrepot_id")
-            quantite    = float(stock.get("quantite", 0))
-            produit     = stock.get("produit") or {}
-            entrepot    = stock.get("entrepot") or {}
-            seuil_min   = float(produit.get("seuil_alerte_min") or 10)
-            seuil_max   = float(produit.get("seuil_alerte_max") or 1000)
+            produit_id    = stock.get("produit_id")
+            entrepot_id   = stock.get("entrepot_id")
+            quantite      = float(stock.get("quantite", 0))
+            produit       = stock.get("produit") or {}
+            seuil_min     = float(produit.get("seuil_alerte_min") or 10)
+            seuil_max     = float(produit.get("seuil_alerte_max") or 1000)
 
-            sorties_30   = sorties.get((produit_id, entrepot_id), [])
-            total_sorties = sum(sorties_30)
-
-            if total_sorties > 0:
-                # Consommation réelle basée sur les sorties des 30 derniers jours
-                conso_par_jour = round(total_sorties / 30, 2)
-                jours          = round(quantite / conso_par_jour, 1)
-                tendance       = "stable"
-                if len(sorties_30) >= 4:
-                    m2 = len(sorties_30) // 2
-                    moy1 = sum(sorties_30[:m2]) / m2
-                    moy2 = sum(sorties_30[m2:]) / (len(sorties_30) - m2)
-                    if moy2 > moy1 * 1.1:
-                        tendance = "hausse"
-                    elif moy2 < moy1 * 0.9:
-                        tendance = "baisse"
+            # Résolution du nom réel : dépôt ou magasin (jamais "Entrepôt X")
+            dep_id        = stock.get("depot_id")
+            mag_id        = stock.get("magasin_id")
+            loc_type      = stock.get("location_type") or ""
+            if dep_id and dep_id in depots_noms:
+                entrepot_nom = depots_noms[dep_id]
+            elif mag_id and mag_id in magasins_noms:
+                entrepot_nom = magasins_noms[mag_id]
+            elif loc_type == "MAGASIN":
+                entrepot_nom = f"Magasin {mag_id or entrepot_id}"
             else:
-                # Aucune sortie — détecter quand même si le stock est en rupture
-                conso_par_jour = 0.0
-                tendance       = "stable"
-                if quantite <= 0:
-                    jours = 0.0         # rupture même sans historique de sorties
-                elif quantite <= seuil_min:
-                    jours = 0.0         # sous le seuil minimum
-                else:
-                    jours = 9999.0      # vraiment stable, pas de consommation mesurable
+                entrepot_nom = f"Dépôt {dep_id or entrepot_id}"
 
-            # Quantité à commander = 30 jours de conso (ou seuil_min si pas de conso)
+            # ── Tentative ML (Prophet / LinearRegression) ────────
+            methode_ml   = "sliding_average"
+            confiance_ml = None
+            borne_inf    = None
+            borne_sup    = None
+            metriques_ml = None
+            ml_used      = False
+
+            # Cherche modèle exact (pid, eid), sinon tente le modèle groupé (pid, 0)
+            import os as _os
+            _MAX_MODEL_AGE = 7 * 24 * 3600  # modèles > 7 jours → fallback sliding average
+            fc = StockForecaster(produit_id=produit_id, entrepot_id=entrepot_id)
+            if not fc.model_exists:
+                fc = StockForecaster(produit_id=produit_id, entrepot_id=0)
+            _model_fresh = (
+                fc.model_exists
+                and (time.time() - _os.path.getmtime(fc.model_path)) < _MAX_MODEL_AGE
+            )
+            if _model_fresh and fc.load():
+                ml_pred = fc.predict(days_ahead=30)
+                if ml_pred and ml_pred.get("conso_par_jour", 0) >= 0:
+                    conso_par_jour = ml_pred["conso_par_jour"]
+                    tendance       = ml_pred["tendance"]
+                    methode_ml     = ml_pred["method"]
+                    confiance_ml   = ml_pred["confiance"]
+                    borne_inf      = ml_pred.get("borne_inf")
+                    borne_sup      = ml_pred.get("borne_sup")
+                    metriques_ml   = fc.metrics
+                    ml_used        = True
+                    nb_ml         += 1
+
+            # ── Fallback : Moyenne glissante 30j ─────────────────
+            if not ml_used:
+                # Cherche par (pid, eid) puis fallback (pid, 0) si entrepot_source est null
+                sorties_30 = sorties_30j.get((produit_id, entrepot_id),
+                             sorties_30j.get((produit_id, 0), []))
+                total_sorties = sum(sorties_30)
+                if total_sorties > 0:
+                    conso_par_jour = round(total_sorties / 90, 2)
+                    tendance = "stable"
+                    if len(sorties_30) >= 4:
+                        m2 = len(sorties_30) // 2
+                        moy1 = sum(sorties_30[:m2]) / m2
+                        moy2 = sum(sorties_30[m2:]) / (len(sorties_30) - m2)
+                        if moy2 > moy1 * 1.1:
+                            tendance = "hausse"
+                        elif moy2 < moy1 * 0.9:
+                            tendance = "baisse"
+                else:
+                    conso_par_jour = 0.0
+                    tendance       = "stable"
+
+            # ── Calcul rupture et urgence ─────────────────────────
+            if conso_par_jour > 0:
+                jours = round(quantite / conso_par_jour, 1)
+            else:
+                if quantite <= 0:
+                    jours = 0.0
+                elif quantite <= seuil_min:
+                    jours = 0.0
+                else:
+                    jours = 9999.0
+
+            # Commander assez pour couvrir seuil_jours (minimum 30j pour éviter des micro-commandes)
+            horizon_cmd   = max(seuil_jours, 30)
             qte_commander = round(
-                max(conso_par_jour * 30, seuil_min * 2) if conso_par_jour > 0 else seuil_min * 2,
-                0
+                max(conso_par_jour * horizon_cmd, seuil_min * 2) if conso_par_jour > 0 else seuil_min * 2, 0
             )
 
-            # Urgence — vérifier d'abord le niveau de stock réel avant la consommation
+            # ── Urgence et recommandation ─────────────────────────
+            # Priorité 1 : stock revenu au-dessus du seuil sans consommation → stable
             if conso_par_jour == 0 and quantite <= 0:
-                urgence = "critique"
+                urgence        = "critique"
                 recommandation = f"RUPTURE ! Stock à 0 unité (seuil min : {seuil_min:.0f}). Commander {int(qte_commander)} unités immédiatement."
             elif conso_par_jour == 0 and quantite <= seuil_min:
-                urgence = "haute"
+                urgence        = "haute"
                 recommandation = f"Stock sous le seuil minimum ({quantite:.0f} ≤ {seuil_min:.0f}). Commander {int(qte_commander)} unités."
             elif conso_par_jour == 0:
-                urgence = "stable"
+                urgence        = "stable"
                 recommandation = "Aucune sortie enregistrée — stock stable. Surveiller les entrées futures."
             elif jours <= 0:
-                urgence = "critique"
+                urgence        = "critique"
                 recommandation = f"RUPTURE IMMINENTE ! Commander {int(qte_commander)} unités immédiatement."
             elif jours <= 7:
-                urgence = "haute"
+                urgence        = "haute"
                 recommandation = f"Rupture dans {jours:.0f}j — commander {int(qte_commander)} unités cette semaine."
-            elif jours <= 30:
-                urgence = "moyenne"
+            elif quantite < seuil_min:
+                # Stock en-dessous du seuil minimum → toujours urgent, quelle que soit l'horizon
+                urgence        = "haute"
+                recommandation = f"Stock sous le seuil minimum ({quantite:.0f} < {seuil_min:.0f}). Commander {int(qte_commander)} unités."
+            elif jours <= seuil_jours:
+                urgence        = "moyenne"
                 recommandation = f"Rupture dans {jours:.0f}j — planifier une commande de {int(qte_commander)} unités."
             elif quantite > seuil_max:
-                urgence = "basse"
+                urgence        = "basse"
                 recommandation = f"Surstock détecté ({quantite:.0f} > seuil max {seuil_max:.0f}). Réduire les entrées."
+            elif quantite >= seuil_min and jours > seuil_jours:
+                # Stock suffisant pour dépasser l'horizon de prévision → stable
+                urgence        = "stable"
+                recommandation = f"Stock OK — rupture estimée dans {jours:.0f}j, hors de l'horizon {seuil_jours}j."
             else:
-                urgence = "basse"
+                urgence        = "basse"
                 recommandation = f"Stock OK — rupture estimée dans {jours:.0f}j à ce rythme de consommation."
 
             previsions.append(PrevisionProduit(
                 produit_id            = produit_id,
                 produit_nom           = produit.get("designation", f"Produit {produit_id}"),
                 entrepot_id           = entrepot_id,
-                entrepot_nom          = entrepot.get("nom", f"Entrepôt {entrepot_id}"),
+                entrepot_nom          = entrepot_nom,
                 stock_actuel          = quantite,
                 seuil_min             = seuil_min,
                 consommation_par_jour = conso_par_jour,
@@ -1201,6 +1326,11 @@ async def route_previsions(
                 urgence               = urgence,
                 tendance              = tendance,
                 recommandation        = recommandation,
+                methode_ml            = methode_ml,
+                confiance_ml          = confiance_ml,
+                borne_inf             = borne_inf,
+                borne_sup             = borne_sup,
+                metriques_ml          = metriques_ml,
             ))
         except Exception as e:
             logger.error(f"Erreur calcul prévision stock {stock}: {e}")
@@ -1211,10 +1341,139 @@ async def route_previsions(
     previsions.sort(key=lambda p: (ordre.get(p.urgence, 5), p.jours_avant_rupture))
 
     return PrevisionResponse(
-        success    = True,
-        previsions = previsions,
-        total      = len(previsions),
-        genere_le  = datetime.now(timezone.utc),
+        success                 = True,
+        previsions              = previsions,
+        total                   = len(previsions),
+        genere_le               = datetime.now(timezone.utc),
+        modeles_ml_disponibles  = nb_ml,
+    )
+
+
+# ═══════════════════════════════════════════════════════
+# MACHINE LEARNING — ENTRAÎNEMENT & STATUT
+# ═══════════════════════════════════════════════════════
+
+@router.post("/ia/ml/train", response_model=MLTrainResponse,
+             tags=["IA - ML Forecasting"],
+             summary="Entraîner les modèles Prophet/LR pour tous les produits")
+async def route_ml_train(
+    request:      MLTrainRequest,
+    credentials:  HTTPAuthorizationCredentials = Depends(security),
+    current_user: dict = Depends(get_current_gestionnaire_or_admin),
+):
+    """
+    Entraîne un modèle de prévision Prophet (ou LinearRegression en fallback)
+    pour chaque couple (produit, entrepôt) ayant un historique de sorties.
+
+    - Prophet si ≥ 10 points de données journaliers
+    - Régression linéaire polynomiale si 3 à 9 points
+    - Échec signalé si < 3 points
+
+    Les modèles sont sauvegardés sur disque (joblib) et réutilisés
+    automatiquement par l'endpoint /ia/previsions.
+    """
+    import time as _time
+    from collections import defaultdict
+
+    start_ms = _time.time()
+    token    = credentials.credentials
+
+    # ── 1. Récupérer tous les mouvements de type SORTIE ─────────
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.get(
+                f"{settings.MOUVEMENT_SERVICE_URL}/api/v1/mouvements",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"per_page": 2000},
+            )
+            mouvements = r.json() if r.status_code == 200 else []
+            if isinstance(mouvements, dict):
+                mouvements = mouvements.get("mouvements", [])
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Erreur Service-Mouvement: {exc}")
+
+    # ── 2. Grouper les sorties par (produit_id, entrepot_id) ────
+    sorties_par_produit: dict = defaultdict(list)
+    for m in mouvements:
+        if str(m.get("type_mouvement", "")).lower() not in ("sortie",):
+            continue
+        pid = m.get("produit_id")
+        if not pid:
+            continue
+        # entrepot peut être null dans les données — on regroupe par produit seul (eid=0)
+        eid = (m.get("entrepot_source_id") or m.get("entrepot_id")
+               or m.get("source_depot_id") or 0)
+        # Filtrer par produit/entrepot si demandé
+        if request.produit_ids and pid not in request.produit_ids:
+            continue
+        if request.entrepot_ids and eid and eid not in request.entrepot_ids:
+            continue
+        sorties_par_produit[(int(pid), int(eid))].append(m)
+
+    if not sorties_par_produit:
+        return MLTrainResponse(
+            success=True, entraines=0, echecs=0, resultats=[],
+            duree_ms=int((_time.time() - start_ms) * 1000)
+        )
+
+    # ── 3. Entraîner un modèle pour chaque paire ────────────────
+    resultats   = []
+    nb_ok = nb_ko = 0
+
+    for (pid, eid), sorties in sorties_par_produit.items():
+        fc = StockForecaster(produit_id=pid, entrepot_id=eid)
+
+        if not request.force_retrain and fc.model_exists:
+            # Modèle déjà entraîné — charger les métriques sans ré-entraîner
+            if fc.load():
+                resultats.append(MLTrainResultat(
+                    produit_id=pid, entrepot_id=eid, success=True,
+                    method=fc.method, metrics=fc.metrics,
+                    n_samples=fc.train_size,
+                    message="Modèle existant conservé (force_retrain=False)",
+                ))
+                nb_ok += 1
+                continue
+
+        result = fc.train(sorties)
+        if result.get("success"):
+            nb_ok += 1
+            resultats.append(MLTrainResultat(
+                produit_id=pid, entrepot_id=eid, success=True,
+                method=result.get("method"),
+                metrics=result.get("metrics"),
+                n_samples=result.get("n_samples", 0),
+            ))
+        else:
+            nb_ko += 1
+            resultats.append(MLTrainResultat(
+                produit_id=pid, entrepot_id=eid, success=False,
+                n_samples=result.get("n_samples", len(sorties)),
+                message=result.get("reason", "Erreur inconnue"),
+            ))
+
+    logger.info(f"[ML Train] {nb_ok} modèles entraînés, {nb_ko} échecs")
+    return MLTrainResponse(
+        success   = True,
+        entraines = nb_ok,
+        echecs    = nb_ko,
+        resultats = resultats,
+        duree_ms  = int((_time.time() - start_ms) * 1000),
+    )
+
+
+@router.get("/ia/ml/status", response_model=MLStatusResponse,
+            tags=["IA - ML Forecasting"],
+            summary="Statut des modèles ML entraînés (Prophet / LinearRegression)")
+async def route_ml_status(
+    current_user: dict = Depends(get_current_gestionnaire_or_admin),
+):
+    """Liste tous les modèles ML sauvegardés avec leurs métriques."""
+    modeles = list_trained_models()
+    return MLStatusResponse(
+        modeles_disponibles = len(modeles),
+        dossier             = MODELS_DIR,
+        modeles             = modeles,
     )
 
 

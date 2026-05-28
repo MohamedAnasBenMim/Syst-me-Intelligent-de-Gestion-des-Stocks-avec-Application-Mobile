@@ -115,7 +115,7 @@ function AlertePopup({ alerte, onTraiter, onIgnorer }) {
   }, [])
 
   const produit  = alerte.message?.split(' - ')[0] || `Produit #${alerte.produit_id}`
-  const entrepot = alerte.entrepot_nom || `Entrepôt #${alerte.entrepot_id}`
+  const entrepot = alerte.entrepot_nom || `Dépôt #${alerte.entrepot_id}`
 
   return (
     <div className="alert-popup">
@@ -144,7 +144,7 @@ function AlertePopup({ alerte, onTraiter, onIgnorer }) {
 // Occupation des entrepôts
 function EntrepotOccupation({ entrepots }) {
   if (entrepots.length === 0) {
-    return <div className="occ-empty">Aucun entrepôt disponible</div>
+    return <div className="occ-empty">Aucun dépôt disponible</div>
   }
   return (
     <div className="occ-list">
@@ -188,7 +188,7 @@ function EntrepotOccupation({ entrepots }) {
             </div>
             {nonConfiguree && (
               <div className="occ-warning" style={{ color: '#F59E0B' }}>
-                Définir la capacité dans Entrepôts → Modifier
+                Définir la capacité dans Dépôts → Modifier
               </div>
             )}
             {!nonConfiguree && taux >= 85 && (
@@ -368,7 +368,7 @@ function DonutChart({ entrepots }) {
   let cumul = 0
   const segments = entrepots.slice(0, 4).map((e, i) => {
     const pct = (e.capacite_utilisee / total) * 100
-    const seg = { color: ENTREPOT_COLORS[i], start: cumul, end: cumul + pct, pct: Math.round(pct), nom: e.nom || `Entrepôt #${e.id}`, val: Math.round(e.capacite_utilisee) }
+    const seg = { color: ENTREPOT_COLORS[i], start: cumul, end: cumul + pct, pct: Math.round(pct), nom: e.nom || `Dépôt #${e.id}`, val: Math.round(e.capacite_utilisee) }
     cumul += pct
     return seg
   })
@@ -424,7 +424,7 @@ function AlerteRow({ a, onVoir }) {
       <div className="alerte-body">
         <span className="alerte-prod">{a.message?.split(' - ')[0] || `Produit #${a.produit_id}`}</span>
         <span className="alerte-meta">
-          {a.entrepot_nom || `Entrepôt #${a.entrepot_id}`} · {timeAgo(a.created_at)}
+          {a.entrepot_nom || `Dépôt #${a.entrepot_id}`} · {timeAgo(a.created_at)}
         </span>
       </div>
       <button className="alerte-voir-btn" onClick={() => onVoir && onVoir(a)}>Voir</button>
@@ -746,7 +746,7 @@ export default function Dashboard() {
             <div className="occ-prev-row">
               <div className="chart-card">
                 <div className="chart-header">
-                  <span className="chart-title">Occupation entrepôts</span>
+                  <span className="chart-title">Occupation dépôts</span>
                 </div>
                 <div style={{ padding: '16px 20px' }}>
                   <EntrepotOccupation entrepots={entrepots} />
@@ -877,7 +877,7 @@ export default function Dashboard() {
                         <th>ID</th>
                         <th>TYPE</th>
                         <th>PRODUIT</th>
-                        <th>ENTREPÔT</th>
+                        <th>DÉPÔT</th>
                         <th>QUANTITÉ</th>
                         <th>DATE</th>
                         <th>STATUT</th>
@@ -943,7 +943,7 @@ export default function Dashboard() {
                       <>
                         <div className="value-sub">
                           {nonConfig
-                            ? <span style={{ color: '#F59E0B' }}>Certains entrepôts ont une capacité non configurée</span>
+                            ? <span style={{ color: '#F59E0B' }}>Certains dépôts ont une capacité non configurée</span>
                             : `Taux d'occupation moyen : ${tauxAffiche}%`
                           }
                         </div>

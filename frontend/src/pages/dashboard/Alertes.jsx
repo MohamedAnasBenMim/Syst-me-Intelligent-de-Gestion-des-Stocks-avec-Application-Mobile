@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
   Bell, Loader, AlertTriangle, CheckCircle, XCircle,
-  ChevronLeft, ChevronRight, ShieldAlert,
+  ChevronLeft, ChevronRight, ShieldAlert, ScanSearch,
 } from 'lucide-react'
 import DashboardLayout from '../../components/DashboardLayout'
 import { useAuth } from '../../context/AuthContext'
-import { getAlertes, getAlertesStats, updateAlerte } from '../../services/api'
+import { getAlertes, getAlertesStats, updateAlerte, detecterAnomalies } from '../../services/api'
 import './common.css'
 
 // ── Helpers ────────────────────────────────────────────────
@@ -71,6 +71,7 @@ export default function Alertes() {
   const [total,         setTotal]         = useState(0)
   const [updating,      setUpdating]      = useState(null)
   const [toast,         setToast]         = useState(null)
+  const [scanning,      setScanning]      = useState(false)
 
   const PER_PAGE = 20
 
@@ -102,6 +103,23 @@ export default function Alertes() {
 
   useEffect(() => { load() }, [load])
 
+  async function handleDetectAnomalies() {
+    setScanning(true)
+    try {
+      const res = await detecterAnomalies()
+      if (res?.success) {
+        showToast(`Analyse terminée — ${res.anomalies_count ?? 0} anomalie(s), ${res.alertes_creees ?? 0} alerte(s) créée(s).`)
+        load()
+      } else {
+        showToast(res?.message || 'Analyse impossible.', false)
+      }
+    } catch (err) {
+      showToast(err?.response?.data?.detail || err?.message || 'Erreur lors de la détection.', false)
+    } finally {
+      setScanning(false)
+    }
+  }
+
   async function handleAction(alerte, statut) {
     setUpdating(alerte.id)
     try {
@@ -129,6 +147,17 @@ export default function Alertes() {
               <h1>Alertes de stock</h1>
               <p>{total} alerte{total !== 1 ? 's' : ''}</p>
             </div>
+          </div>
+          <div className="page-hdr-actions">
+            <button
+              className="btn-ghost"
+              onClick={handleDetectAnomalies}
+              disabled={scanning}
+              title="Analyser les mouvements et détecter les anomalies"
+            >
+              {scanning ? <Loader size={14} className="spin" /> : <ScanSearch size={14} />}
+              {scanning ? 'Analyse…' : 'Détecter anomalies'}
+            </button>
           </div>
         </div>
 
@@ -252,7 +281,7 @@ export default function Alertes() {
                         <td className="td-id">#{a.id}</td>
                         <td><span className={`badge ${nc.badgeClass}`}>{nc.label}</span></td>
                         <td className="td-name">{a.produit_nom || `Produit #${a.produit_id}`}</td>
-                        <td className="td-muted">{a.entrepot_nom || `Entrepôt #${a.entrepot_id}`}</td>
+                        <td className="td-muted">{a.entrepot_nom || `Dépôt #${a.entrepot_id}`}</td>
                         <td style={{ fontWeight: 600 }}>{a.quantite_actuelle ?? '—'}</td>
                         <td className="td-muted">{a.seuil_alerte_min ?? '—'}</td>
                         <td style={{ fontSize: 12, color: '#374151', maxWidth: 220 }}>

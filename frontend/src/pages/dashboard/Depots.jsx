@@ -217,7 +217,7 @@ function MagasinModal({ mode, initial, depotId, depotNom, onClose, onSaved }) {
 }
 
 // ── Panneau détail dépôt (magasins + stocks) ─────────────────
-function DepotDetail({ depot, magasins, loadingMag, canWrite, isAdmin, onAddMagasin, onEditMagasin, onDeleteMagasin }) {
+function DepotDetail({ depot, magasins, loadingMag, canWrite, isAdmin, magQtyMap = {}, onAddMagasin, onEditMagasin, onDeleteMagasin }) {
   const [stocks,      setStocks]      = useState(null)
   const [loadingStk,  setLoadingStk]  = useState(false)
   const [errorStk,    setErrorStk]    = useState(null)
@@ -262,7 +262,8 @@ function DepotDetail({ depot, magasins, loadingMag, canWrite, isAdmin, onAddMaga
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {magasins.map(m => {
-                const taux  = m.taux_occupation ?? (m.capacite_max > 0 ? Math.round(((m.capacite_utilisee || 0) / m.capacite_max) * 100) : 0)
+                const realQte = magQtyMap[m.id] || 0
+                const taux  = m.capacite_max > 0 ? Math.min(100, Math.round((realQte / m.capacite_max) * 100)) : (m.taux_occupation ?? 0)
                 const barC  = taux >= 90 ? '#DC3545' : taux >= 70 ? '#E8730A' : '#28A745'
                 return (
                   <div key={m.id} style={{ background: '#fff', border: '1px solid #E5E7EB', borderRadius: 8, padding: '10px 14px' }}>
@@ -292,7 +293,7 @@ function DepotDetail({ depot, magasins, loadingMag, canWrite, isAdmin, onAddMaga
                         <div style={{ width: `${Math.min(taux, 100)}%`, height: '100%', background: barC, borderRadius: 4 }} />
                       </div>
                       <span style={{ fontSize: 11, color: barC, fontWeight: 600, minWidth: 34 }}>{taux}%</span>
-                      <span style={{ fontSize: 10, color: '#9CA3AF' }}>{(m.capacite_utilisee || 0).toLocaleString('fr-FR')} / {m.capacite_max?.toLocaleString('fr-FR')}</span>
+                      <span style={{ fontSize: 10, color: '#9CA3AF' }}>{realQte.toLocaleString('fr-FR')} / {m.capacite_max?.toLocaleString('fr-FR')}</span>
                     </div>
                   </div>
                 )
@@ -468,6 +469,8 @@ export default function Depots() {
   const [depots,      setDepots]      = useState([])
   const [magasinsMap, setMagasinsMap] = useState({})   // depot_id → magasins[]
   const [loadingMagMap, setLoadingMagMap] = useState({})
+  const [depotQtyMap, setDepotQtyMap] = useState({})   // depot_id → total stock qty
+  const [magQtyMap,   setMagQtyMap]   = useState({})   // magasin_id → total stock qty
   const [loading,     setLoading]     = useState(true)
   const [error,       setError]       = useState(null)
   const [search,      setSearch]      = useState('')
@@ -484,8 +487,22 @@ export default function Depots() {
   async function load() {
     setLoading(true); setError(null)
     try {
-      const data = await getDepots({ actif_seulement: false })
-      setDepots(Array.isArray(data?.depots) ? data.depots : [])
+      const [depData, stkData] = await Promise.allSettled([
+        getDepots({ actif_seulement: false }),
+        getStocks(),
+      ])
+      setDepots(depData.status === 'fulfilled' ? (Array.isArray(depData.value?.depots) ? depData.value.depots : []) : [])
+      if (stkData.status === 'fulfilled') {
+        const stocks = Array.isArray(stkData.value) ? stkData.value : (stkData.value?.stocks || [])
+        // Même normalisation que la page Stocks : depot_id || magasin_id || entrepot_id
+        const locMap = {}
+        stocks.forEach(s => {
+          const normId = s.depot_id || s.magasin_id || s.entrepot_id
+          if (normId) locMap[normId] = (locMap[normId] || 0) + (s.quantite || 0)
+        })
+        setDepotQtyMap(locMap)
+        setMagQtyMap(locMap)
+      }
     } catch (err) { setError(err.message) }
     finally { setLoading(false) }
   }
@@ -603,7 +620,7 @@ export default function Depots() {
           <div className="page-hdr-left">
             <Building2 size={22} color="var(--teal)" />
             <div>
-              <h1>Entrepôts</h1>
+              <h1>Dépôts</h1>
               <p>{loading ? '…' : `${depots.length} dépôt${depots.length > 1 ? 's' : ''} — ${totalMagasins} magasin${totalMagasins > 1 ? 's' : ''} rattaché${totalMagasins > 1 ? 's' : ''}`}</p>
             </div>
           </div>
@@ -709,7 +726,8 @@ export default function Depots() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {filtered.map(d => {
                 const isOpen   = expanded.has(d.id)
-                const taux     = d.taux_occupation ?? (d.capacite_max > 0 ? Math.round(((d.capacite_utilisee || 0) / d.capacite_max) * 100) : 0)
+                const realQte  = depotQtyMap[d.id] || 0
+                const taux     = d.capacite_max > 0 ? Math.min(100, Math.round((realQte / d.capacite_max) * 100)) : (d.taux_occupation ?? 0)
                 const barColor = taux >= 90 ? '#DC3545' : taux >= 70 ? '#E8730A' : '#6366F1'
                 const colors   = TYPE_COLORS[d.depot_type] || TYPE_COLORS.REGIONAL
 
@@ -753,7 +771,7 @@ export default function Depots() {
                           <div style={{ width: `${Math.min(taux, 100)}%`, height: '100%', background: barColor, borderRadius: 4 }} />
                         </div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#9CA3AF', marginTop: 3 }}>
-                          <span>{(d.capacite_utilisee || 0).toLocaleString('fr-FR')}</span>
+                          <span>{realQte.toLocaleString('fr-FR')}</span>
                           <span>{d.capacite_max?.toLocaleString('fr-FR')}</span>
                         </div>
                       </div>
@@ -776,6 +794,7 @@ export default function Depots() {
                         loadingMag={loadingMagMap[d.id] || false}
                         canWrite={canWrite}
                         isAdmin={isAdmin}
+                        magQtyMap={magQtyMap}
                         onAddMagasin={dep => setModal({ type: 'create-magasin', depot: dep })}
                         onEditMagasin={(m, dep) => setModal({ type: 'edit-magasin', item: m, depot: dep })}
                         onDeleteMagasin={m => setModal({ type: 'delete-magasin', item: m })}

@@ -18,7 +18,7 @@ from app.schemas import (
 from app.dependencies import (
     get_current_user,
     get_current_admin,
-    get_current_gestionnaire_or_admin,
+    get_all_roles,
     get_pagination
 )
 from app.config import settings
@@ -362,7 +362,7 @@ async def lister_notifications(
     produit_id  : Optional[int] = Query(None),
     entrepot_id : Optional[int] = Query(None),
     db          : Session       = Depends(get_db),
-    current_user: dict          = Depends(get_current_gestionnaire_or_admin),
+    current_user: dict          = Depends(get_all_roles),
     pagination  : dict          = Depends(get_pagination)
 ):
     query = db.query(Notification)
@@ -399,7 +399,7 @@ async def lister_notifications(
 )
 async def stats_notifications(
     db          : Session = Depends(get_db),
-    current_user: dict    = Depends(get_current_gestionnaire_or_admin),
+    current_user: dict    = Depends(get_all_roles),
 ):
     return NotificationStats(
         total_envoyees   = db.query(Notification).filter(
@@ -500,7 +500,7 @@ async def renvoyer_notification(
 async def get_notification(
     notification_id: int,
     db             : Session = Depends(get_db),
-    current_user   : dict    = Depends(get_current_gestionnaire_or_admin),
+    current_user   : dict    = Depends(get_all_roles),
 ):
     notification = db.query(Notification).filter(
         Notification.id == notification_id

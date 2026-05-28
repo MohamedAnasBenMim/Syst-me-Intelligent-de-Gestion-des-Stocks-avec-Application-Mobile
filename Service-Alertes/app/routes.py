@@ -19,6 +19,7 @@ from app.dependencies import (
     get_current_user,
     get_current_admin,
     get_current_gestionnaire_or_admin,
+    get_all_roles,
     get_pagination
 )
 from app.config import settings
@@ -645,7 +646,7 @@ async def alertes_actives(
 )
 async def stats_alertes(
     db          : Session = Depends(get_db),
-    current_user: dict    = Depends(get_current_gestionnaire_or_admin)
+    current_user: dict    = Depends(get_all_roles)
 ):
     return AlerteStats(
         total_actives  = db.query(Alerte).filter(Alerte.statut  == StatutAlerte.ACTIVE).count(),
@@ -674,7 +675,7 @@ async def stats_alertes(
 )
 async def detecter_anomalies(
     db          : Session                      = Depends(get_db),
-    current_user: dict                         = Depends(get_current_gestionnaire_or_admin),
+    current_user: dict                         = Depends(get_all_roles),
     credentials : HTTPAuthorizationCredentials = Depends(security),
 ):
     token = credentials.credentials
@@ -818,6 +819,64 @@ async def detecter_anomalies(
                     "raison":        raison
                 })
                 creer_alerte(m2, "doublon", raison)
+
+    # ════════════════════════════════════════════════════
+    # ANOMALIE 4 — Isolation Forest (ML statistique)
+    # ════════════════════════════════════════════════════
+    # Features : quantite, heure du mouvement, type encodé
+    # Un score très négatif = mouvement très anormal
+    # contamination=0.05 → on s'attend à ~5% d'anomalies
+    # ════════════════════════════════════════════════════
+    try:
+        type_enc = {"entree": 0, "sortie": 1, "transfert": 2}
+        features  = []
+        for m in mouvements:
+            qte = float(m.get("quantite") or 0)
+            try:
+                dt    = datetime.fromisoformat((m.get("created_at") or "").replace("Z", "+00:00"))
+                heure = dt.hour
+            except Exception:
+                heure = 12
+            t = type_enc.get(m.get("type_mouvement", ""), 0)
+            features.append([qte, heure, t])
+
+        X    = np.array(features)
+        clf  = IsolationForest(contamination=0.05, n_estimators=100, random_state=42)
+        preds  = clf.fit_predict(X)
+        scores = clf.decision_function(X)   # négatif = plus anormal
+
+        ids_deja = {a["mouvement_id"] for a in anomalies_detectees}
+
+        for i, m in enumerate(mouvements):
+            if preds[i] != -1 or m.get("id") in ids_deja:
+                continue
+            score = round(float(scores[i]), 4)
+            qte   = float(m.get("quantite") or 0)
+            heure_str = ""
+            try:
+                dt = datetime.fromisoformat((m.get("created_at") or "").replace("Z", "+00:00"))
+                heure_str = f" à {dt.hour:02d}h{dt.minute:02d}"
+            except Exception:
+                pass
+            raison = (
+                f"Mouvement statistiquement anormal (Isolation Forest, score={score}) — "
+                f"{m.get('type_mouvement', '')} de {qte} unités{heure_str} — "
+                f"comportement inhabituel par rapport à l'historique"
+            )
+            anomalies_detectees.append({
+                "mouvement_id":   m.get("id"),
+                "produit_id":     m.get("produit_id"),
+                "produit_nom":    m.get("produit_nom"),
+                "quantite":       qte,
+                "type":           m.get("type_mouvement"),
+                "date":           (m.get("created_at") or "")[:10],
+                "type_anomalie":  "isolation_forest",
+                "score_anomalie": score,
+                "raison":         raison,
+            })
+            creer_alerte(m, "isolation_forest", raison)
+    except Exception:
+        pass  # sklearn indisponible ou données insuffisantes → on continue
 
     db.commit()
 

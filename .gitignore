@@ -10,3 +10,10 @@
 **/.coverage
 .vscode/
 .idea/
+
+# Node / React Native / Expo
+**/node_modules/
+mobile/.expo/
+mobile/dist/
+mobile/build/
+**/.expo-shared/

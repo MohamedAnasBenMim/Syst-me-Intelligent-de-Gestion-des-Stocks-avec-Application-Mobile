@@ -73,10 +73,12 @@ async def appeler_stock_augmenter(
             timeout=10.0
         )
     if response.status_code != 200:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Service Stock erreur augmenter : {response.json()}"
-        )
+        try:
+            err = response.json().get("detail", response.text)
+        except Exception:
+            err = response.text or f"HTTP {response.status_code}"
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail=f"Service Stock erreur augmenter : {err}")
     return response.json()
 
 
@@ -116,10 +118,11 @@ async def appeler_stock_diminuer(
             timeout=10.0
         )
     if response.status_code != 200:
-        raise HTTPException(
-            status_code=response.status_code,
-            detail=response.json().get("detail", "Erreur Service Stock")
-        )
+        try:
+            err = response.json().get("detail", response.text)
+        except Exception:
+            err = response.text or f"HTTP {response.status_code}"
+        raise HTTPException(status_code=response.status_code, detail=err)
     return response.json()
 
 

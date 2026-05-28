@@ -65,7 +65,7 @@ const DonutChart = ({ pct, color, bg }) => {
 
 const kpis = [
   { label: 'Produits actifs', value: 247,  icon: Package,    color: '#2563EB', bg: '#EFF6FF',  trend: +12, pct: 82 },
-  { label: 'Entrepôts',       value: 3,    icon: Warehouse,  color: '#8B5CF6', bg: '#F5F3FF',  trend: 0,   pct: 100 },
+  { label: 'Dépôts',          value: 3,    icon: Warehouse,  color: '#8B5CF6', bg: '#F5F3FF',  trend: 0,   pct: 100 },
   { label: 'Alertes actives', value: 5,    icon: Bell,       color: '#DC2626', bg: '#FEF2F2',  trend: -2,  pct: 28 },
   { label: 'Mouvements/mois', value: 128,  icon: TrendingUp, color: '#059669', bg: '#ECFDF5',  trend: +18, pct: 68 },
 ]
@@ -86,7 +86,7 @@ export default function DashboardPreview() {
 
         <div className="section-header">
           <span className="badge-pill dp-badge">Aperçu produit</span>
-          <h2>Dashboard Multi-Entrepôts</h2>
+          <h2>Dashboard Multi-Dépôts</h2>
           <p>Suivi intelligent de vos stocks en temps réel</p>
         </div>
 

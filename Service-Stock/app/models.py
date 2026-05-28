@@ -193,7 +193,7 @@ class Promotion(Base):
 
 
 # ══════════════════════════════════════════════════════════
-# NOTE : Table Mouvement supprimée de ce service
+# 
 # Les mouvements sont gérés par Service Mouvement (port 8004)
 # Service Stock expose uniquement :
 #   PATCH /api/v1/stocks/augmenter ← appelé par Service Mouvement

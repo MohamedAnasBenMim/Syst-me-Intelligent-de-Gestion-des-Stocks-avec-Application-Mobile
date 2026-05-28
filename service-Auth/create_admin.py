@@ -19,7 +19,7 @@ Base.metadata.create_all(bind=engine)
 
 def create_admin():
     if not ADMIN_EMAIL or not ADMIN_PASSWORD:
-        print("❌ ADMIN_EMAIL ou ADMIN_PASSWORD manquant dans .env !")
+        print(" ADMIN_EMAIL ou ADMIN_PASSWORD manquant dans .env !")
         return
 
     db = SessionLocal()
@@ -29,7 +29,7 @@ def create_admin():
         ).first()
 
         if existant:
-            print("✅ Admin existe déjà !")
+            print(" Admin existe déjà !")
             return
 
         admin = Utilisateur(
@@ -42,7 +42,7 @@ def create_admin():
         )
         db.add(admin)
         db.commit()
-        print("✅ Admin créé avec succès !")
+        print(" Admin créé avec succès !")
         print(f"   Email : {ADMIN_EMAIL}")
         print(f"   Role  : admin")
 

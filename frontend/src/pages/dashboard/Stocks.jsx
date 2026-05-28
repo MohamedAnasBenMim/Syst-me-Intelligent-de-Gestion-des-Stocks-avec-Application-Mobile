@@ -434,7 +434,7 @@ export default function Stocks() {
                   border: 'none', cursor: 'pointer',
                 }}
               >
-                <Home size={13} /> Tous les entrepôts
+                <Home size={13} /> Tous les dépôts
               </button>
 
               {breadcrumb.map((n, i) => (
@@ -523,7 +523,7 @@ export default function Stocks() {
               </select>
               {flatEntrepots.length > 0 && (
                 <select value={filterEntrepot} onChange={e => setFilterEntrepot(e.target.value)}>
-                  <option value="">Tous les entrepôts</option>
+                  <option value="">Tous les dépôts</option>
                   {flatEntrepots.map(e => (
                     <option key={e.id} value={String(e.id)}>
                       {INDENT[e.depth] || '        '}{e.nom}

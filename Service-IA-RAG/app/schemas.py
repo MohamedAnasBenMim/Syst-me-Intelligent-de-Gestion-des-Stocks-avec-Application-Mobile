@@ -134,30 +134,72 @@ class QuestionResponse(BaseModel):
 
 
 # ══════════════════════════════════════════════════════════
-# PRÉVISIONS PROPHET ML
+# PRÉVISIONS ML (Prophet / LinearRegression / Sliding Average)
 # ══════════════════════════════════════════════════════════
 
 class PrevisionProduit(BaseModel):
-    produit_id:           int
-    produit_nom:          str
-    entrepot_id:          int
-    entrepot_nom:         str
-    stock_actuel:         float
-    seuil_min:            float
-    consommation_par_jour: float          # moyenne sur 30 jours (0 = aucune sortie)
-    jours_avant_rupture:  float           # stock_actuel / conso_jour (9999 = stable)
-    quantite_a_commander: float           # conso * 30 jours
-    urgence:              str             # critique / haute / moyenne / basse / stable
-    tendance:             str             # hausse / baisse / stable
-    recommandation:       Optional[str] = None  # conseil affiché à l'utilisateur
+    produit_id:            int
+    produit_nom:           str
+    entrepot_id:           int
+    entrepot_nom:          str
+    stock_actuel:          float
+    seuil_min:             float
+    consommation_par_jour: float           # unités/jour prévues
+    jours_avant_rupture:   float           # stock_actuel / conso_jour (9999 = stable)
+    quantite_a_commander:  float           # conso * 30 jours
+    urgence:               str             # critique / haute / moyenne / basse / stable
+    tendance:              str             # hausse / baisse / stable
+    recommandation:        Optional[str]  = None
+
+    # ── Champs ML enrichis ────────────────────────────────
+    methode_ml:   str            = "sliding_average"   # prophet | linear_regression | sliding_average
+    confiance_ml: Optional[float] = None               # score 0.0→1.0 (ML uniquement)
+    borne_inf:    Optional[float] = None               # borne basse 80% CI (Prophet uniquement)
+    borne_sup:    Optional[float] = None               # borne haute 80% CI (Prophet uniquement)
+    metriques_ml: Optional[Dict[str, Any]] = None      # MAE, RMSE, MAPE/R²
 
 
 class PrevisionResponse(BaseModel):
-    success:       bool
-    previsions:    List[PrevisionProduit]
-    total:         int
-    genere_le:     datetime
-    methode:       str = "Prophet ML (consommation moyenne glissante 30j)"
+    success:    bool
+    previsions: List[PrevisionProduit]
+    total:      int
+    genere_le:  datetime
+    methode:    str = "ML hybride : Prophet / Régression linéaire / Moyenne glissante"
+    modeles_ml_disponibles: int = 0  # nb de produits avec un modèle ML entraîné
+
+
+# ══════════════════════════════════════════════════════════
+# ENTRAÎNEMENT ML
+# ══════════════════════════════════════════════════════════
+
+class MLTrainRequest(BaseModel):
+    produit_ids:   Optional[List[int]] = None   # None = entraîner tous les produits
+    entrepot_ids:  Optional[List[int]] = None
+    force_retrain: bool                = False   # forcer ré-entraînement si modèle existe déjà
+
+
+class MLTrainResultat(BaseModel):
+    produit_id:  int
+    entrepot_id: int
+    success:     bool
+    method:      Optional[str]  = None   # "prophet" | "linear_regression"
+    metrics:     Optional[Dict[str, Any]] = None
+    n_samples:   int            = 0
+    message:     Optional[str]  = None
+
+
+class MLTrainResponse(BaseModel):
+    success:    bool
+    entraines:  int             # nb de modèles entraînés avec succès
+    echecs:     int             # nb d'échecs
+    resultats:  List[MLTrainResultat]
+    duree_ms:   int
+
+
+class MLStatusResponse(BaseModel):
+    modeles_disponibles: int
+    dossier:             str
+    modeles:             List[Dict[str, Any]]
 
 
 # ══════════════════════════════════════════════════════════

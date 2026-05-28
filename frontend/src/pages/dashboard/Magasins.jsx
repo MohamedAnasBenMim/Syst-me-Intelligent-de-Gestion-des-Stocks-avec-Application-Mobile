@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Store, Plus, Pencil, Trash2, Loader, X, Check, AlertTriangle, Search, MapPin, User, Phone, Clock } from 'lucide-react'
 import DashboardLayout from '../../components/DashboardLayout'
 import { useAuth } from '../../context/AuthContext'
-import { getMagasins, createMagasin, updateMagasin, deleteMagasin, getDepots } from '../../services/api'
+import { getMagasins, createMagasin, updateMagasin, deleteMagasin, getDepots, getStocks } from '../../services/api'
 import './common.css'
 
 function OccupationBar({ taux }) {
@@ -138,6 +138,7 @@ export default function Magasins() {
 
   const [magasins,     setMagasins]     = useState([])
   const [depots,       setDepots]       = useState([])
+  const [magQtyMap,    setMagQtyMap]    = useState({})
   const [loading,      setLoading]      = useState(true)
   const [error,        setError]        = useState(null)
   const [search,       setSearch]       = useState('')
@@ -150,12 +151,23 @@ export default function Magasins() {
   async function load() {
     setLoading(true); setError(null)
     try {
-      const [magData, depData] = await Promise.allSettled([
+      const [magData, depData, stkData] = await Promise.allSettled([
         getMagasins({ actif_seulement: false }),
         getDepots({ actif_seulement: true }),
+        getStocks(),
       ])
       setMagasins(magData.status === 'fulfilled' ? (magData.value?.magasins || []) : [])
       setDepots(depData.status === 'fulfilled' ? (depData.value?.depots || []) : [])
+      if (stkData.status === 'fulfilled') {
+        const stocks = Array.isArray(stkData.value) ? stkData.value : (stkData.value?.stocks || [])
+        const map = {}
+        // Même normalisation que la page Stocks : depot_id || magasin_id || entrepot_id
+        stocks.forEach(s => {
+          const normId = s.depot_id || s.magasin_id || s.entrepot_id
+          if (normId) map[normId] = (map[normId] || 0) + (s.quantite || 0)
+        })
+        setMagQtyMap(map)
+      }
     } catch (err) { setError(err.message) }
     finally { setLoading(false) }
   }
@@ -246,7 +258,10 @@ export default function Magasins() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map(m => (
+                  {filtered.map(m => {
+                    const realQte  = magQtyMap[m.id] || 0
+                    const realTaux = m.capacite_max > 0 ? Math.min(100, Math.round((realQte / m.capacite_max) * 100)) : (m.taux_occupation || 0)
+                    return (
                     <tr key={m.id}>
                       <td className="td-id">#{m.id}</td>
                       <td>
@@ -261,7 +276,7 @@ export default function Magasins() {
                       <td className="text-muted">
                         {m.ville && <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><MapPin size={12} />{m.ville}</span>}
                       </td>
-                      <td style={{ minWidth: 140 }}><OccupationBar taux={m.taux_occupation || 0} /></td>
+                      <td style={{ minWidth: 140 }}><OccupationBar taux={realTaux} /></td>
                       <td style={{ fontSize: 12 }}>
                         {m.responsable && <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}><User size={11} />{m.responsable}</div>}
                         {m.telephone   && <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#6B7280' }}><Phone size={11} />{m.telephone}</div>}
@@ -277,7 +292,7 @@ export default function Magasins() {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                  )})}
                 </tbody>
               </table>
             </div>
