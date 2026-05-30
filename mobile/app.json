@@ -1,0 +1,33 @@
+{
+  "expo": {
+    "name": "SGS Mobile",
+    "slug": "sgs-saas",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "backgroundColor": "#004678"
+    },
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#004678"
+      },
+      "package": "com.herzellighofransorganization.sgssaas"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "d438778f-bdbd-43b2-893f-c515501bfe87"
+      }
+    },
+    "owner": "herzellighofrans-organization"
+  }
+}
